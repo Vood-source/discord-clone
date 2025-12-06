@@ -376,6 +376,30 @@ function setupSocketHandlers(io) {
       socket.join(`voice_${channelId}`);
       
       const user = users.get(socket.id);
+      
+      // Отправляем новому пользователю список уже подключенных участников
+      const existingParticipants = [];
+      voiceRooms.get(channelId).forEach(socketId => {
+        if (socketId !== socket.id) {
+          const existingUser = users.get(socketId);
+          if (existingUser) {
+            existingParticipants.push({
+              socketId: socketId,
+              username: existingUser.username || 'Unknown'
+            });
+          }
+        }
+      });
+      
+      // Отправляем список существующих участников новому пользователю
+      if (existingParticipants.length > 0) {
+        socket.emit('existing_voice_participants', {
+          channelId: channelId,
+          participants: existingParticipants
+        });
+      }
+      
+      // Уведомляем других пользователей о новом участнике
       socket.to(`voice_${channelId}`).emit('user_joined_voice', {
         socketId: socket.id,
         username: user?.username || 'Unknown'
