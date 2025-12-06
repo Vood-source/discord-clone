@@ -369,13 +369,14 @@ function setupSocketHandlers(io) {
 
     // Голосовой чат - присоединение
     socket.on('join_voice', (channelId) => {
+      const user = users.get(socket.id);
+      console.log(`🎤 Пользователь ${user?.username || socket.id} присоединяется к голосовому каналу ${channelId}`);
+      
       if (!voiceRooms.has(channelId)) {
         voiceRooms.set(channelId, new Set());
       }
       voiceRooms.get(channelId).add(socket.id);
       socket.join(`voice_${channelId}`);
-      
-      const user = users.get(socket.id);
       
       // Отправляем новому пользователю список уже подключенных участников
       const existingParticipants = [];
@@ -391,8 +392,11 @@ function setupSocketHandlers(io) {
         }
       });
       
+      console.log(`📋 Существующих участников в канале ${channelId}:`, existingParticipants.length);
+      
       // Отправляем список существующих участников новому пользователю
       if (existingParticipants.length > 0) {
+        console.log('📤 Отправляю список существующих участников:', existingParticipants.map(p => p.username));
         socket.emit('existing_voice_participants', {
           channelId: channelId,
           participants: existingParticipants
@@ -405,6 +409,7 @@ function setupSocketHandlers(io) {
         username: user?.username || 'Unknown'
       });
       
+      console.log('✅ Отправляю voice_joined для:', user?.username || socket.id);
       socket.emit('voice_joined', channelId);
     });
 

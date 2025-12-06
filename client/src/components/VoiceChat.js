@@ -255,6 +255,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
 
     const handleVoiceJoined = () => {
       if (isMountedRef.current) {
+        console.log('✅ Подтверждение: присоединился к голосовому каналу');
         setIsConnected(true);
       }
     };
@@ -629,8 +630,13 @@ function VoiceChat({ channelId, channelName, socket, user }) {
         localVideoRef.current.srcObject = stream;
       }
 
+      console.log('✅ Локальный поток установлен, треки:', stream.getTracks().map(t => ({ kind: t.kind, id: t.id, enabled: t.enabled })));
+
       if (socket && socket.connected) {
+        console.log('📤 Отправляю join_voice для канала:', channelId);
         socket.emit('join_voice', channelId);
+      } else {
+        console.error('❌ Socket не подключен!', socket ? 'socket существует' : 'socket отсутствует', socket?.connected);
       }
       
       // Очищаем предыдущие ошибки
@@ -778,19 +784,27 @@ function VoiceChat({ channelId, channelName, socket, user }) {
 
   // Создаем peer connections для всех участников когда локальный поток готов
   useEffect(() => {
+    console.log('🔍 useEffect для peer connections:', {
+      hasLocalStream: !!localStream,
+      participantsCount: participants.length,
+      participants: participants.map(p => ({ socketId: p.socketId, username: p.username }))
+    });
+    
     if (localStream && participants.length > 0) {
       console.log('✅ Локальный поток готов, создаю peer connections для участников:', participants.length);
       participants.forEach(participant => {
         // Создаем peer connection только если его еще нет
         if (!peerConnections.current.has(participant.socketId)) {
-          console.log('Создаю peer connection для участника:', participant.socketId, participant.username);
+          console.log('🚀 Создаю peer connection для участника:', participant.socketId, participant.username);
           createPeerConnection(participant.socketId);
         } else {
-          console.log('Peer connection уже существует для:', participant.socketId);
+          console.log('⚠️ Peer connection уже существует для:', participant.socketId);
         }
       });
     } else if (participants.length > 0 && !localStream) {
       console.log('⏳ Ожидаю локальный поток для создания peer connections...');
+    } else if (localStream && participants.length === 0) {
+      console.log('⏳ Локальный поток готов, но участников пока нет');
     }
   }, [localStream, participants, createPeerConnection]);
 
