@@ -4,6 +4,7 @@ import './App.css';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import VoiceChat from './components/VoiceChat';
+import RadioPlayer from './components/RadioPlayer';
 import LoginModal from './components/LoginModal';
 import ServerConfigModal from './components/ServerConfigModal';
 
@@ -211,7 +212,9 @@ function App() {
           />
           {selectedChannel && (
             <>
-              {isVoiceChannel ? (
+              {selectedChannel === 'radio' ? (
+                <RadioPlayer />
+              ) : isVoiceChannel ? (
                 <VoiceChat
                   channelId={selectedChannel}
                   channelName={selectedChannelData?.name}

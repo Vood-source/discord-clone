@@ -92,6 +92,21 @@ function Sidebar({ servers, channels, selectedServer, selectedChannel, onSelectS
           </div>
         </div>
 
+        <div className="channels-section">
+          <div className="channels-header">
+            <span>📻 РАДИО</span>
+          </div>
+          <div className="channels-list">
+            <div
+              className={`channel-item radio ${selectedChannel === 'radio' ? 'active' : ''}`}
+              onClick={() => onSelectChannel('radio')}
+            >
+              <span className="channel-icon">📻</span>
+              <span className="channel-name">Русское Радио</span>
+            </div>
+          </div>
+        </div>
+
         {onlineUsers && onlineUsers.length > 0 && (
           <div className="channels-section">
             <div className="channels-header">
