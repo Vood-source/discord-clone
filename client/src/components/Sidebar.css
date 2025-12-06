@@ -184,6 +184,18 @@
   flex: 1;
 }
 
+.channel-item.radio {
+  color: #faa61a;
+}
+
+.channel-item.radio:hover {
+  color: #ffb84d;
+}
+
+.channel-item.radio.active {
+  color: #ffb84d;
+}
+
 .sidebar-user {
   background: linear-gradient(180deg, #292b2f 0%, #1e1f22 100%);
   padding: 8px;
