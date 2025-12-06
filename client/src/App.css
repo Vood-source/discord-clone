@@ -1,0 +1,26 @@
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background-color: #36393f;
+}
+
+.welcome-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #72767d;
+}
+
+.welcome-screen h1 {
+  font-size: 32px;
+  margin-bottom: 16px;
+  color: #fff;
+}
+
+.welcome-screen p {
+  font-size: 16px;
+}
+

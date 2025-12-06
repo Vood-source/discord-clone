@@ -1,0 +1,138 @@
+.voice-chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: #36393f;
+}
+
+.voice-header {
+  height: 48px;
+  background-color: #36393f;
+  border-bottom: 1px solid #202225;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  box-shadow: 0 1px 0 rgba(4, 4, 5, 0.2);
+}
+
+.voice-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.voice-participants {
+  flex: 1;
+}
+
+.voice-participants h3 {
+  color: #fff;
+  font-size: 20px;
+  margin-bottom: 24px;
+}
+
+.participant-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  background-color: #2f3136;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  transition: background-color 0.2s;
+}
+
+.participant-card:hover {
+  background-color: #393c43;
+}
+
+.participant-card.local {
+  border: 2px solid #5865f2;
+}
+
+.participant-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background-color: #5865f2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 600;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.participant-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.participant-name {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.participant-status {
+  color: #b9bbbe;
+  font-size: 14px;
+}
+
+.empty-participants {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: #72767d;
+}
+
+.voice-controls {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid #202225;
+}
+
+.join-voice-btn,
+.leave-voice-btn {
+  width: 100%;
+  padding: 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.join-voice-btn {
+  background-color: #5865f2;
+  color: #fff;
+}
+
+.join-voice-btn:hover {
+  background-color: #4752c4;
+}
+
+.leave-voice-btn {
+  background-color: #ed4245;
+  color: #fff;
+}
+
+.leave-voice-btn:hover {
+  background-color: #c03537;
+}
+
+.join-voice-btn span,
+.leave-voice-btn span {
+  font-size: 20px;
+}
+

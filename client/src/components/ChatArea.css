@@ -1,0 +1,162 @@
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: #36393f;
+}
+
+.chat-header {
+  height: 48px;
+  background-color: #36393f;
+  border-bottom: 1px solid #202225;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  box-shadow: 0 1px 0 rgba(4, 4, 5, 0.2);
+}
+
+.channel-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.channel-icon {
+  color: #8e9297;
+  font-size: 20px;
+}
+
+.chat-header h2 {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.messages-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.empty-messages {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #72767d;
+}
+
+.message-wrapper {
+  display: flex;
+  gap: 16px;
+  padding: 4px 0;
+  transition: background-color 0.1s;
+}
+
+.message-wrapper:hover {
+  background-color: rgba(4, 4, 5, 0.1);
+}
+
+.message-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: #5865f2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 600;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.message-avatar-spacer {
+  width: 40px;
+  flex-shrink: 0;
+}
+
+.message-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.message-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.message-author {
+  color: #fff;
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.message-time {
+  color: #72767d;
+  font-size: 12px;
+}
+
+.message-text {
+  color: #dcddde;
+  font-size: 16px;
+  line-height: 1.375;
+  word-wrap: break-word;
+}
+
+.chat-input-container {
+  padding: 16px;
+  background-color: #36393f;
+}
+
+.chat-input-form {
+  display: flex;
+  gap: 8px;
+  background-color: #40444b;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.chat-input {
+  flex: 1;
+  background-color: transparent;
+  border: none;
+  color: #dcddde;
+  font-size: 16px;
+  outline: none;
+  padding: 4px 8px;
+}
+
+.chat-input::placeholder {
+  color: #72767d;
+}
+
+.send-button {
+  background-color: #5865f2;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.send-button:hover:not(:disabled) {
+  background-color: #4752c4;
+}
+
+.send-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
