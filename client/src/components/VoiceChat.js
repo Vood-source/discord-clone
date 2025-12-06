@@ -6,9 +6,13 @@ function VoiceChat({ channelId, channelName, socket, user }) {
   const [participants, setParticipants] = useState([]);
   const [localStream, setLocalStream] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState(new Map());
+  const [isMuted, setIsMuted] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const peerConnections = useRef(new Map());
   const localVideoRef = useRef(null);
   const remoteVideoRefs = useRef(new Map());
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
 
   useEffect(() => {
     socket.on('voice_joined', () => {
@@ -168,10 +172,54 @@ function VoiceChat({ channelId, channelName, socket, user }) {
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
+
+      // Настройка анализатора для определения активности речи
+      try {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const analyser = audioContext.createAnalyser();
+        const source = audioContext.createMediaStreamSource(stream);
+        source.connect(analyser);
+        analyser.fftSize = 256;
+        
+        audioContextRef.current = audioContext;
+        analyserRef.current = analyser;
+
+        // Проверка активности речи
+        let animationFrameId;
+        const checkSpeaking = () => {
+          if (analyserRef.current) {
+            const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+            analyserRef.current.getByteFrequencyData(dataArray);
+            const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+            const muted = localStream?.getAudioTracks()[0]?.enabled === false;
+            setIsSpeaking(!muted && average > 20);
+          }
+          animationFrameId = requestAnimationFrame(checkSpeaking);
+        };
+        checkSpeaking();
+
+        return () => {
+          if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+          }
+        };
+      } catch (e) {
+        console.log('Анализатор аудио недоступен');
+      }
+
       socket.emit('join_voice', channelId);
     } catch (error) {
       console.error('Ошибка доступа к микрофону:', error);
       alert('Не удалось получить доступ к микрофону. Проверьте разрешения.');
+    }
+  };
+
+  const toggleMute = () => {
+    if (localStream) {
+      localStream.getAudioTracks().forEach(track => {
+        track.enabled = isMuted;
+      });
+      setIsMuted(!isMuted);
     }
   };
 
@@ -180,16 +228,31 @@ function VoiceChat({ channelId, channelName, socket, user }) {
       localStream.getTracks().forEach(track => track.stop());
       setLocalStream(null);
     }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
     peerConnections.current.forEach(pc => pc.close());
     peerConnections.current.clear();
     setRemoteStreams(new Map());
     setIsConnected(false);
+    setIsMuted(false);
+    setIsSpeaking(false);
     socket.emit('leave_voice', channelId);
   };
 
   useEffect(() => {
     return () => {
-      leaveVoice();
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
+      peerConnections.current.forEach(pc => pc.close());
+      peerConnections.current.clear();
+      if (isConnected) {
+        socket.emit('leave_voice', channelId);
+      }
     };
   }, []);
 
@@ -207,13 +270,24 @@ function VoiceChat({ channelId, channelName, socket, user }) {
           <h3>Участники ({participants.length + (isConnected ? 1 : 0)})</h3>
           
           {isConnected && (
-            <div className="participant-card local">
+            <div className={`participant-card local ${isSpeaking ? 'speaking' : ''}`}>
               <div className="participant-avatar">
                 {user?.username?.charAt(0).toUpperCase() || 'U'}
               </div>
               <div className="participant-info">
                 <div className="participant-name">{user?.username || 'Вы'}</div>
-                <div className="participant-status">Вы</div>
+                <div className="participant-status">
+                  {isMuted ? '🔇 Заглушен' : isSpeaking ? '🎤 Говорит' : 'В сети'}
+                </div>
+              </div>
+              <div className="participant-controls">
+                <button 
+                  className={`mute-btn ${isMuted ? 'muted' : ''}`}
+                  onClick={toggleMute}
+                  title={isMuted ? 'Включить микрофон' : 'Выключить микрофон'}
+                >
+                  {isMuted ? '🔇' : '🎤'}
+                </button>
               </div>
               <audio ref={localVideoRef} autoPlay muted />
             </div>
@@ -256,10 +330,19 @@ function VoiceChat({ channelId, channelName, socket, user }) {
               Присоединиться к голосовому каналу
             </button>
           ) : (
-            <button className="leave-voice-btn" onClick={leaveVoice}>
-              <span>📞</span>
-              Покинуть канал
-            </button>
+            <div className="voice-controls-buttons">
+              <button 
+                className={`mute-control-btn ${isMuted ? 'muted' : ''}`}
+                onClick={toggleMute}
+                title={isMuted ? 'Включить микрофон' : 'Выключить микрофон'}
+              >
+                {isMuted ? '🔇' : '🎤'}
+              </button>
+              <button className="leave-voice-btn" onClick={leaveVoice}>
+                <span>📞</span>
+                Покинуть канал
+              </button>
+            </div>
           )}
         </div>
       </div>

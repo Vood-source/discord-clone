@@ -49,6 +49,19 @@
   border-radius: 16px;
 }
 
+.server-icon.add-server {
+  background-color: #36393f;
+  color: #3ba55d;
+  font-size: 24px;
+  font-weight: 300;
+}
+
+.server-icon.add-server:hover {
+  background-color: #3ba55d;
+  color: #fff;
+  border-radius: 16px;
+}
+
 .sidebar-content {
   margin-left: 72px;
   flex: 1;
@@ -79,6 +92,28 @@
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.add-channel-btn {
+  background: none;
+  border: none;
+  color: #8e9297;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s;
+}
+
+.add-channel-btn:hover {
+  color: #dcddde;
 }
 
 .channels-list {
@@ -182,5 +217,120 @@
 .server-config-btn:hover {
   background-color: #393c43;
   color: #fff;
+}
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1002;
+}
+
+.modal-content {
+  background-color: #2f3136;
+  border-radius: 8px;
+  padding: 24px;
+  width: 90%;
+  max-width: 400px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.modal-content h3 {
+  color: #fff;
+  margin-bottom: 16px;
+  font-size: 20px;
+}
+
+.modal-content input {
+  width: 100%;
+  background-color: #202225;
+  border: none;
+  border-radius: 4px;
+  padding: 12px;
+  color: #dcddde;
+  font-size: 16px;
+  outline: none;
+  margin-bottom: 16px;
+}
+
+.modal-content input:focus {
+  background-color: #1e1f22;
+  border: 1px solid #5865f2;
+}
+
+.modal-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.modal-buttons button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.modal-buttons button[type="button"] {
+  background-color: #4f545c;
+  color: #fff;
+}
+
+.modal-buttons button[type="button"]:hover {
+  background-color: #5d6269;
+}
+
+.modal-buttons button[type="submit"] {
+  background-color: #5865f2;
+  color: #fff;
+}
+
+.modal-buttons button[type="submit"]:hover {
+  background-color: #4752c4;
+}
+
+.users-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 8px;
+}
+
+.user-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: #8e9297;
+  transition: all 0.2s;
+}
+
+.user-item:hover {
+  background-color: #393c43;
+  color: #dcddde;
+}
+
+.user-status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.user-status-indicator.online {
+  background-color: #3ba55d;
+}
+
+.user-name {
+  font-size: 14px;
 }
 

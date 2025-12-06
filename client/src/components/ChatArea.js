@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './ChatArea.css';
 
-function ChatArea({ channelName, messages, onSendMessage, user }) {
+function ChatArea({ channelName, messages, onSendMessage, user, socket, channelId }) {
   const [inputValue, setInputValue] = useState('');
+  const [editingMessage, setEditingMessage] = useState(null);
+  const [hoveredMessage, setHoveredMessage] = useState(null);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -16,8 +18,12 @@ function ChatArea({ channelName, messages, onSendMessage, user }) {
   const handleSubmit = (e) => {
     e.preventDefault();
     if (inputValue.trim()) {
-      onSendMessage(inputValue);
-      setInputValue('');
+      if (editingMessage) {
+        handleSaveEdit(e);
+      } else {
+        onSendMessage(inputValue);
+        setInputValue('');
+      }
     }
   };
 
@@ -26,6 +32,38 @@ function ChatArea({ channelName, messages, onSendMessage, user }) {
     const hours = date.getHours().toString().padStart(2, '0');
     const minutes = date.getMinutes().toString().padStart(2, '0');
     return `${hours}:${minutes}`;
+  };
+
+  const handleEditMessage = (messageId, currentContent) => {
+    setEditingMessage({ id: messageId, content: currentContent });
+    setInputValue(currentContent);
+  };
+
+  const handleSaveEdit = (e) => {
+    e.preventDefault();
+    if (editingMessage && inputValue.trim()) {
+      socket.emit('edit_message', {
+        messageId: editingMessage.id,
+        channelId: channelId,
+        content: inputValue.trim()
+      });
+      setEditingMessage(null);
+      setInputValue('');
+    }
+  };
+
+  const handleDeleteMessage = (messageId) => {
+    if (window.confirm('Удалить это сообщение?')) {
+      socket.emit('delete_message', {
+        messageId: messageId,
+        channelId: channelId
+      });
+    }
+  };
+
+  const cancelEdit = () => {
+    setEditingMessage(null);
+    setInputValue('');
   };
 
   return (
@@ -56,14 +94,42 @@ function ChatArea({ channelName, messages, onSendMessage, user }) {
                     </div>
                   )}
                   {!showAvatar && <div className="message-avatar-spacer"></div>}
-                  <div className="message-content">
+                  <div 
+                    className="message-content"
+                    onMouseEnter={() => setHoveredMessage(message.id)}
+                    onMouseLeave={() => setHoveredMessage(null)}
+                  >
                     {showAvatar && (
                       <div className="message-header">
                         <span className="message-author">{message.username || 'Неизвестный'}</span>
                         <span className="message-time">{formatTime(message.created_at)}</span>
                       </div>
                     )}
-                    <div className="message-text">{message.content}</div>
+                    <div className="message-text">
+                      {editingMessage?.id === message.id ? (
+                        <span style={{ fontStyle: 'italic', color: '#72767d' }}>Редактируется...</span>
+                      ) : (
+                        message.content
+                      )}
+                    </div>
+                    {isOwnMessage && hoveredMessage === message.id && !editingMessage && (
+                      <div className="message-actions">
+                        <button 
+                          className="message-action-btn"
+                          onClick={() => handleEditMessage(message.id, message.content)}
+                          title="Редактировать"
+                        >
+                          ✏️
+                        </button>
+                        <button 
+                          className="message-action-btn"
+                          onClick={() => handleDeleteMessage(message.id)}
+                          title="Удалить"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -78,12 +144,21 @@ function ChatArea({ channelName, messages, onSendMessage, user }) {
           <input
             type="text"
             className="chat-input"
-            placeholder={`Написать в #${channelName || 'канал'}`}
+            placeholder={editingMessage ? 'Редактировать сообщение...' : `Написать в #${channelName || 'канал'}`}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
           />
+          {editingMessage && (
+            <button 
+              type="button" 
+              className="cancel-edit-btn" 
+              onClick={cancelEdit}
+            >
+              Отмена
+            </button>
+          )}
           <button type="submit" className="send-button" disabled={!inputValue.trim()}>
-            Отправить
+            {editingMessage ? 'Сохранить' : 'Отправить'}
           </button>
         </form>
       </div>

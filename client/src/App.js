@@ -34,6 +34,7 @@ function App() {
   const [showServerConfig, setShowServerConfig] = useState(false);
   const [serverUrl, setServerUrl] = useState(getServerUrl());
   const [socketInstance, setSocketInstance] = useState(socket);
+  const [onlineUsers, setOnlineUsers] = useState([]);
 
   useEffect(() => {
     const currentSocket = socketInstance;
@@ -76,10 +77,37 @@ function App() {
       setMessages(prev => [...prev, message]);
     });
 
+    currentSocket.on('message_edited', (data) => {
+      setMessages(prev => prev.map(msg => 
+        msg.id === data.id ? { ...msg, content: data.content } : msg
+      ));
+    });
+
+    currentSocket.on('message_deleted', (data) => {
+      setMessages(prev => prev.filter(msg => msg.id !== data.id));
+    });
+
+    currentSocket.on('server_created', (server) => {
+      setServers(prev => [...prev, server]);
+    });
+
+    currentSocket.on('channel_created', (channel) => {
+      setChannels(prev => [...prev, channel]);
+    });
+
+    currentSocket.on('online_users_list', (users) => {
+      setOnlineUsers(users);
+    });
+
     currentSocket.on('error', (error) => {
       console.error('Ошибка:', error);
       alert(error.message);
     });
+
+    // Запрашиваем список пользователей онлайн
+    if (user) {
+      currentSocket.emit('get_online_users');
+    }
 
     return () => {
       currentSocket.off('connect');
@@ -90,9 +118,14 @@ function App() {
       currentSocket.off('channels_list');
       currentSocket.off('messages_list');
       currentSocket.off('new_message');
+      currentSocket.off('message_edited');
+      currentSocket.off('message_deleted');
+      currentSocket.off('server_created');
+      currentSocket.off('channel_created');
+      currentSocket.off('online_users_list');
       currentSocket.off('error');
     };
-  }, [socketInstance, selectedServer]);
+  }, [socketInstance, selectedServer, user]);
 
   useEffect(() => {
     if (selectedServer) {
@@ -132,6 +165,20 @@ function App() {
     setShowServerConfig(false);
   };
 
+  const createServer = (name) => {
+    socketInstance.emit('create_server', { name });
+  };
+
+  const createChannel = (name, type = 'text') => {
+    if (selectedServer) {
+      socketInstance.emit('create_channel', {
+        serverId: selectedServer,
+        name,
+        type
+      });
+    }
+  };
+
   const selectedChannelData = channels.find(c => c.id === selectedChannel);
   const isVoiceChannel = selectedChannelData?.type === 'voice';
 
@@ -158,6 +205,9 @@ function App() {
             onSelectChannel={setSelectedChannel}
             user={user}
             onServerConfig={() => setShowServerConfig(true)}
+            onCreateServer={createServer}
+            onCreateChannel={createChannel}
+            onlineUsers={onlineUsers}
           />
           {selectedChannel && (
             <>
@@ -169,12 +219,14 @@ function App() {
                   user={user}
                 />
               ) : (
-                <ChatArea
-                  channelName={selectedChannelData?.name}
-                  messages={messages}
-                  onSendMessage={sendMessage}
-                  user={user}
-                />
+            <ChatArea
+              channelName={selectedChannelData?.name}
+              messages={messages}
+              onSendMessage={sendMessage}
+              user={user}
+              socket={socketInstance}
+              channelId={selectedChannel}
+            />
               )}
             </>
           )}

@@ -52,6 +52,37 @@
   border: 2px solid #5865f2;
 }
 
+.participant-card.speaking {
+  border-color: #3ba55d;
+  background-color: rgba(59, 165, 93, 0.1);
+}
+
+.participant-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.mute-btn {
+  background: none;
+  border: none;
+  color: #b9bbbe;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.mute-btn:hover {
+  background-color: #393c43;
+  color: #fff;
+}
+
+.mute-btn.muted {
+  color: #ed4245;
+}
+
 .participant-avatar {
   width: 48px;
   height: 48px;
@@ -95,6 +126,38 @@
   margin-top: 24px;
   padding-top: 24px;
   border-top: 1px solid #202225;
+}
+
+.voice-controls-buttons {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.mute-control-btn {
+  background-color: #4f545c;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 20px;
+  font-size: 20px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mute-control-btn:hover {
+  background-color: #5d6269;
+}
+
+.mute-control-btn.muted {
+  background-color: #ed4245;
+}
+
+.mute-control-btn.muted:hover {
+  background-color: #c03537;
 }
 
 .join-voice-btn,
