@@ -143,30 +143,53 @@ function VoiceChat({ channelId, channelName, socket, user }) {
   const createPeerConnection = useCallback(async (socketId) => {
     if (peerConnections.current.has(socketId)) {
       const existingPc = peerConnections.current.get(socketId);
+      
+      // Проверяем состояние соединения
+      const state = existingPc.signalingState;
+      console.log('Существующее соединение для', socketId, 'в состоянии:', state);
+      
+      // Если уже есть remote offer, не создаем свой offer - ждем answer
+      if (state === 'have-remote-offer') {
+        console.log('Уже есть remote offer, не создаю свой offer для:', socketId);
+        return;
+      }
+      
+      // Если уже установлены descriptions, не создаем offer
+      if (state === 'stable' && existingPc.localDescription && existingPc.remoteDescription) {
+        console.log('Descriptions уже установлены для:', socketId);
+        return;
+      }
+      
       // Проверяем, есть ли уже треки
-      if (existingPc.getSenders().length > 0) {
+      if (existingPc.getSenders().length > 0 && state === 'stable') {
         console.log('Peer connection уже существует с треками для:', socketId);
         return;
       }
+      
       // Если соединение есть, но треков нет, добавляем их
-      if (localStream) {
+      if (localStream && existingPc.getSenders().length === 0) {
         localStream.getTracks().forEach(track => {
           existingPc.addTrack(track, localStream);
         });
-        // Создаем offer после добавления треков
-        try {
-          const offer = await existingPc.createOffer();
-          await existingPc.setLocalDescription(offer);
-          console.log('Offer создан для существующего соединения:', socketId);
-          if (socket && socket.connected) {
-            socket.emit('voice_signal', {
-              channelId,
-              signal: offer,
-              to: socketId
+        // Создаем offer только если нет remote description
+        if (!existingPc.remoteDescription && state === 'stable') {
+          try {
+            const offer = await existingPc.createOffer({
+              offerToReceiveAudio: true,
+              offerToReceiveVideo: false
             });
+            await existingPc.setLocalDescription(offer);
+            console.log('Offer создан для существующего соединения:', socketId);
+            if (socket && socket.connected) {
+              socket.emit('voice_signal', {
+                channelId,
+                signal: offer,
+                to: socketId
+              });
+            }
+          } catch (error) {
+            console.error('Ошибка создания offer для существующего соединения:', error);
           }
-        } catch (error) {
-          console.error('Ошибка создания offer для существующего соединения:', error);
         }
       }
       return;
@@ -189,6 +212,12 @@ function VoiceChat({ channelId, channelName, socket, user }) {
     }
 
     try {
+      // Проверяем, не получили ли мы уже offer от этого пользователя
+      if (pc.signalingState !== 'stable' || pc.remoteDescription) {
+        console.log('Уже есть remote description, не создаю offer для:', socketId);
+        return;
+      }
+      
       // Создаем offer с правильными настройками для аудио
       const offer = await pc.createOffer({
         offerToReceiveAudio: true,
@@ -319,7 +348,17 @@ function VoiceChat({ channelId, channelName, socket, user }) {
       }
 
       try {
+        // Проверяем текущее состояние соединения
+        const currentState = pc.signalingState;
+        console.log('Текущее состояние соединения для', data.from, ':', currentState);
+
         if (data.signal.type === 'offer') {
+          // Проверяем, не создали ли мы уже свой offer
+          if (currentState === 'have-local-offer' || pc.localDescription) {
+            console.warn('⚠️ Уже есть local offer, игнорирую входящий offer от:', data.from);
+            return;
+          }
+          
           console.log('Обрабатываю offer от:', data.from);
           
           // Убеждаемся, что локальный поток добавлен перед обработкой offer
@@ -331,6 +370,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
           }
           
           await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
+          console.log('Remote description (offer) установлен для:', data.from);
           
           // Обрабатываем накопленные ICE candidates если они есть
           if (pc._pendingCandidates && pc._pendingCandidates.length > 0) {
@@ -338,6 +378,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
             for (const candidate of pc._pendingCandidates) {
               try {
                 await pc.addIceCandidate(candidate);
+                console.log('✅ Добавлен накопленный ICE candidate');
               } catch (error) {
                 console.error('Ошибка добавления накопленного candidate:', error);
               }
@@ -359,19 +400,35 @@ function VoiceChat({ channelId, channelName, socket, user }) {
             });
           }
         } else if (data.signal.type === 'answer') {
+          // Проверяем, что мы в правильном состоянии для установки answer
+          if (currentState !== 'have-local-offer') {
+            console.warn('⚠️ Неправильное состояние для answer:', currentState, 'от:', data.from);
+            return;
+          }
+          
           console.log('Обрабатываю answer от:', data.from);
           await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
-          console.log('Remote description установлен для:', data.from);
+          console.log('Remote description (answer) установлен для:', data.from);
           
           // Обрабатываем накопленные ICE candidates если они есть
-          if (pc._processPendingCandidates) {
-            pc._processPendingCandidates();
+          if (pc._pendingCandidates && pc._pendingCandidates.length > 0) {
+            console.log('Обрабатываю накопленные ICE candidates после answer:', pc._pendingCandidates.length);
+            for (const candidate of pc._pendingCandidates) {
+              try {
+                await pc.addIceCandidate(candidate);
+              } catch (error) {
+                console.error('Ошибка добавления накопленного candidate:', error);
+              }
+            }
+            pc._pendingCandidates = [];
           }
         } else if (data.signal.type === 'ice-candidate') {
           if (data.signal.candidate) {
             console.log('Добавляю ICE candidate от:', data.from);
             try {
               const candidate = new RTCIceCandidate(data.signal.candidate);
+              
+              // Проверяем, установлен ли remote description
               if (pc.remoteDescription) {
                 await pc.addIceCandidate(candidate);
                 console.log('✅ ICE candidate добавлен для:', data.from);
@@ -381,17 +438,31 @@ function VoiceChat({ channelId, channelName, socket, user }) {
                   pc._pendingCandidates = [];
                 }
                 pc._pendingCandidates.push(candidate);
-                console.log('⏳ Remote description еще не установлен, сохраняю candidate');
+                console.log('⏳ Remote description еще не установлен, сохраняю candidate (всего:', pc._pendingCandidates.length, ')');
               }
             } catch (error) {
-              console.error('Ошибка добавления ICE candidate:', error);
+              // Игнорируем ошибки если description еще не установлен
+              if (error.message && error.message.includes('remote description')) {
+                console.log('Remote description еще не установлен, сохраняю candidate');
+                if (!pc._pendingCandidates) {
+                  pc._pendingCandidates = [];
+                }
+                pc._pendingCandidates.push(new RTCIceCandidate(data.signal.candidate));
+              } else {
+                console.error('Ошибка добавления ICE candidate:', error);
+              }
             }
           }
         }
       } catch (error) {
-        console.error('Ошибка обработки сигнала:', error, 'от:', data.from);
+        console.error('❌ Ошибка обработки сигнала:', error, 'от:', data.from, 'тип:', data.signal.type);
+        console.error('Состояние соединения:', pc.signalingState);
+        console.error('Local description:', pc.localDescription ? 'есть' : 'нет');
+        console.error('Remote description:', pc.remoteDescription ? 'есть' : 'нет');
+        
         // Очищаем соединение при критической ошибке
         if (error.name === 'InvalidStateError' || error.name === 'OperationError') {
+          console.error('Критическая ошибка, закрываю соединение для:', data.from);
           if (peerConnections.current.has(data.from)) {
             peerConnections.current.get(data.from).close();
             peerConnections.current.delete(data.from);
