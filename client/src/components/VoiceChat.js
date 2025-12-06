@@ -65,15 +65,39 @@ function VoiceChat({ channelId, channelName, socket, user }) {
     pc.ontrack = (event) => {
       if (!isMountedRef.current) return;
       console.log('🎵 Получен удаленный аудио поток от:', socketId, event.streams);
-      console.log('Треки в потоке:', event.streams[0]?.getTracks());
-      event.streams[0]?.getTracks().forEach(track => {
-        console.log('  - Трек:', track.kind, track.id, 'enabled:', track.enabled);
-      });
-      setRemoteStreams(prevStreams => {
-        const newStreams = new Map(prevStreams);
-        newStreams.set(socketId, event.streams[0]);
-        return newStreams;
-      });
+      
+      const remoteStream = event.streams[0];
+      if (remoteStream) {
+        console.log('Треки в потоке:', remoteStream.getTracks().length);
+        remoteStream.getTracks().forEach(track => {
+          console.log('  - Трек:', track.kind, track.id, 'enabled:', track.enabled, 'muted:', track.muted, 'readyState:', track.readyState);
+          
+          // ВАЖНО: Включаем трек если он отключен
+          if (!track.enabled) {
+            console.log('  ⚠️ Трек отключен, включаю его');
+            track.enabled = true;
+          }
+          
+          // Обработчик изменения состояния трека
+          track.onended = () => {
+            console.log('Трек завершен для:', socketId);
+          };
+          
+          track.onmute = () => {
+            console.warn('⚠️ Трек заглушен для:', socketId);
+          };
+          
+          track.onunmute = () => {
+            console.log('✅ Трек разглушен для:', socketId);
+          };
+        });
+        
+        setRemoteStreams(prevStreams => {
+          const newStreams = new Map(prevStreams);
+          newStreams.set(socketId, remoteStream);
+          return newStreams;
+        });
+      }
     };
 
     // Обработчик ICE кандидатов
@@ -810,48 +834,103 @@ function VoiceChat({ channelId, channelName, socket, user }) {
 
   // Обновляем audio элементы когда появляются удаленные потоки
   useEffect(() => {
+    const intervals = new Map();
+    
     remoteStreams.forEach((stream, socketId) => {
       let audioElement = remoteVideoRefs.current.get(socketId);
       
       // Создаем audio элемент если его нет
       if (!audioElement) {
-        console.log('Создаю новый audio элемент для:', socketId);
+        console.log('🔊 Создаю новый audio элемент для:', socketId);
         audioElement = document.createElement('audio');
         audioElement.autoplay = true;
         audioElement.playsInline = true;
+        audioElement.volume = 1.0; // Максимальная громкость
+        audioElement.muted = false; // Не заглушать
+        
+        // Обработчики событий для отладки
+        audioElement.onplay = () => {
+          console.log('▶️ Аудио начало воспроизведение для:', socketId);
+        };
+        
+        audioElement.onpause = () => {
+          console.warn('⏸️ Аудио приостановлено для:', socketId);
+        };
+        
+        audioElement.onerror = (e) => {
+          console.error('❌ Ошибка audio элемента для:', socketId, e);
+        };
+        
+        audioElement.onloadedmetadata = () => {
+          console.log('📋 Метаданные загружены для:', socketId);
+        };
+        
         remoteVideoRefs.current.set(socketId, audioElement);
       }
       
       if (audioElement.srcObject !== stream) {
         console.log('🎵 Обновляю audio элемент для:', socketId);
         audioElement.srcObject = stream;
+        audioElement.volume = 1.0;
+        audioElement.muted = false;
         
         // Убеждаемся, что треки включены
         stream.getTracks().forEach(track => {
-          console.log('  Трек в потоке:', track.kind, track.id, 'enabled:', track.enabled);
+          console.log('  Трек в потоке:', track.kind, track.id, 'enabled:', track.enabled, 'readyState:', track.readyState);
           if (!track.enabled) {
+            console.log('  ⚠️ Включаю отключенный трек');
             track.enabled = true;
           }
         });
         
-        audioElement.play().then(() => {
-          console.log('✅ Аудио воспроизводится для:', socketId);
-        }).catch(err => {
-          console.error('❌ Ошибка воспроизведения аудио для:', socketId, err);
-          // Пробуем еще раз через небольшую задержку
-          setTimeout(() => {
-            audioElement.play().catch(e => {
-              console.error('Повторная ошибка воспроизведения:', e);
-            });
-          }, 100);
-        });
+        // Принудительное воспроизведение
+        const playAudio = async () => {
+          try {
+            await audioElement.play();
+            console.log('✅ Аудио воспроизводится для:', socketId, 'volume:', audioElement.volume, 'muted:', audioElement.muted);
+            console.log('  Треки в потоке:', stream.getTracks().length, 'все включены:', stream.getTracks().every(t => t.enabled));
+          } catch (err) {
+            console.error('❌ Ошибка воспроизведения аудио для:', socketId, err);
+            console.error('  volume:', audioElement.volume, 'muted:', audioElement.muted, 'paused:', audioElement.paused);
+            console.error('  srcObject:', audioElement.srcObject ? 'есть' : 'нет');
+            
+            // Пробуем еще раз через небольшую задержку
+            setTimeout(() => {
+              audioElement.play().catch(e => {
+                console.error('Повторная ошибка воспроизведения:', e);
+              });
+            }, 500);
+          }
+        };
+        
+        playAudio();
       } else if (audioElement.paused) {
         // Если элемент уже настроен, но приостановлен, возобновляем
+        console.log('▶️ Возобновляю воспроизведение для:', socketId);
         audioElement.play().catch(err => {
           console.error('Ошибка возобновления воспроизведения:', err);
         });
       }
+      
+      // Периодически проверяем, что аудио воспроизводится
+      if (!intervals.has(socketId)) {
+        const checkInterval = setInterval(() => {
+          const el = remoteVideoRefs.current.get(socketId);
+          if (el && el.paused && el.srcObject) {
+            console.warn('⚠️ Аудио приостановлено для:', socketId, 'пробую возобновить');
+            el.play().catch(err => {
+              console.error('Ошибка при попытке возобновить:', err);
+            });
+          }
+        }, 2000);
+        intervals.set(socketId, checkInterval);
+      }
     });
+    
+    // Очищаем все интервалы при размонтировании
+    return () => {
+      intervals.forEach(interval => clearInterval(interval));
+    };
   }, [remoteStreams]);
 
   // Очистка при размонтировании компонента или смене канала
