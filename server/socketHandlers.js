@@ -204,25 +204,34 @@ function setupSocketHandlers(io) {
         return;
       }
 
-      const db = getDatabase();
-      // Используем индекс для быстрого поиска по channel_id и created_at
-      db.all(
-        `SELECT m.*, u.username, u.avatar 
-         FROM messages m 
-         JOIN users u ON m.user_id = u.id 
-         WHERE m.channel_id = ? 
-         ORDER BY m.created_at DESC 
-         LIMIT ? OFFSET ?`,
-        [channelId, limit, offset],
-        (err, messages) => {
-          if (err) {
-            console.error('Ошибка получения сообщений:', err);
-            socket.emit('error', { message: 'Ошибка получения сообщений' });
-            return;
+      try {
+        const db = getDatabase();
+        // Используем индекс для быстрого поиска по channel_id и created_at
+        db.all(
+          `SELECT m.*, u.username, u.avatar 
+           FROM messages m 
+           JOIN users u ON m.user_id = u.id 
+           WHERE m.channel_id = ? 
+           ORDER BY m.created_at DESC 
+           LIMIT ? OFFSET ?`,
+          [channelId, limit, offset],
+          (err, messages) => {
+            if (err) {
+              console.error('Ошибка получения сообщений:', err);
+              if (err.message && err.message.includes('no such table')) {
+                socket.emit('error', { message: 'База данных еще не инициализирована. Попробуйте позже.' });
+              } else {
+                socket.emit('error', { message: 'Ошибка получения сообщений' });
+              }
+              return;
+            }
+            socket.emit('messages_list', (messages || []).reverse());
           }
-          socket.emit('messages_list', (messages || []).reverse());
-        }
-      );
+        );
+      } catch (error) {
+        console.error('Ошибка при получении базы данных:', error);
+        socket.emit('error', { message: 'База данных не доступна' });
+      }
     });
 
     // Отправка сообщения с валидацией
@@ -250,31 +259,40 @@ function setupSocketHandlers(io) {
         return;
       }
 
-      const db = getDatabase();
-      const messageId = uuidv4();
-      
-      db.run(
-        "INSERT INTO messages (id, channel_id, user_id, content) VALUES (?, ?, ?, ?)",
-        [messageId, data.channelId, user.id, content],
-        function(err) {
-          if (err) {
-            console.error('Ошибка отправки сообщения:', err);
-            socket.emit('error', { message: 'Ошибка отправки сообщения' });
-            return;
+      try {
+        const db = getDatabase();
+        const messageId = uuidv4();
+        
+        db.run(
+          "INSERT INTO messages (id, channel_id, user_id, content) VALUES (?, ?, ?, ?)",
+          [messageId, data.channelId, user.id, content],
+          function(err) {
+            if (err) {
+              console.error('Ошибка отправки сообщения:', err);
+              if (err.message && err.message.includes('no such table')) {
+                socket.emit('error', { message: 'База данных еще не инициализирована. Попробуйте позже.' });
+              } else {
+                socket.emit('error', { message: 'Ошибка отправки сообщения: ' + err.message });
+              }
+              return;
+            }
+
+            const message = {
+              id: messageId,
+              channel_id: data.channelId,
+              user_id: user.id,
+              username: user.username,
+              content: content,
+              created_at: new Date().toISOString()
+            };
+
+            io.to(data.channelId).emit('new_message', message);
           }
-
-          const message = {
-            id: messageId,
-            channel_id: data.channelId,
-            user_id: user.id,
-            username: user.username,
-            content: content,
-            created_at: new Date().toISOString()
-          };
-
-          io.to(data.channelId).emit('new_message', message);
-        }
-      );
+        );
+      } catch (error) {
+        console.error('Ошибка при получении базы данных для отправки сообщения:', error);
+        socket.emit('error', { message: 'База данных не доступна' });
+      }
     });
 
     // Редактирование сообщения

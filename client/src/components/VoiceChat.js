@@ -461,7 +461,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
     if (localStream) {
       const newMutedState = !isMuted;
       localStream.getAudioTracks().forEach(track => {
-        track.enabled = newMutedState;
+        track.enabled = !newMutedState; // Инвертируем: если muted=true, то track.enabled=false
       });
       setIsMuted(newMutedState);
     }

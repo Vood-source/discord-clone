@@ -4,8 +4,10 @@ import './Sidebar.css';
 function Sidebar({ servers, channels, selectedServer, selectedChannel, onSelectServer, onSelectChannel, user, onServerConfig, onCreateServer, onCreateChannel, onlineUsers }) {
   const [showCreateServerModal, setShowCreateServerModal] = useState(false);
   const [showCreateChannelModal, setShowCreateChannelModal] = useState(false);
-  const textChannels = channels.filter(c => c.type === 'text');
-  const voiceChannels = channels.filter(c => c.type === 'voice');
+  // Фильтруем каналы по выбранному серверу и типу
+  const serverChannels = channels.filter(c => c.server_id === selectedServer);
+  const textChannels = serverChannels.filter(c => c.type === 'text');
+  const voiceChannels = serverChannels.filter(c => c.type === 'voice');
 
   return (
     <div className="sidebar">
