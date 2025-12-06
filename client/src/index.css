@@ -10,7 +10,8 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #36393f;
+  background: linear-gradient(135deg, #1e1f22 0%, #2f3136 50%, #36393f 100%);
+  background-attachment: fixed;
   color: #dcddde;
   overflow: hidden;
 }

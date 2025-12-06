@@ -1,13 +1,14 @@
 .sidebar {
   display: flex;
   width: 240px;
-  background-color: #2f3136;
+  background: linear-gradient(180deg, #1e1f22 0%, #2f3136 100%);
   flex-direction: column;
+  box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
 }
 
 .sidebar-servers {
   width: 72px;
-  background-color: #202225;
+  background: linear-gradient(180deg, #1a1b1e 0%, #202225 100%);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -17,6 +18,7 @@
   left: 0;
   top: 0;
   bottom: 52px; /* Оставляем место для sidebar-user (высота ~52px) */
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.4);
 }
 
 .server-list {
@@ -29,25 +31,29 @@
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  background-color: #36393f;
+  background: linear-gradient(135deg, #36393f 0%, #40444b 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   color: #dcddde;
   font-weight: 600;
   font-size: 18px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .server-icon:hover {
-  background-color: #5865f2;
+  background: linear-gradient(135deg, #5865f2 0%, #4752c4 100%);
   border-radius: 16px;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(88, 101, 242, 0.4);
 }
 
 .server-icon.active {
-  background-color: #5865f2;
+  background: linear-gradient(135deg, #5865f2 0%, #4752c4 100%);
   border-radius: 16px;
+  box-shadow: 0 4px 12px rgba(88, 101, 242, 0.5);
 }
 
 .server-icon.add-server {
@@ -127,21 +133,44 @@
   display: flex;
   align-items: center;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
   color: #8e9297;
-  transition: all 0.2s;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   gap: 6px;
+  position: relative;
+}
+
+.channel-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 0;
+  background: linear-gradient(180deg, #5865f2 0%, #4752c4 100%);
+  border-radius: 0 3px 3px 0;
+  transition: height 0.3s;
 }
 
 .channel-item:hover {
-  background-color: #393c43;
+  background: linear-gradient(90deg, rgba(57, 60, 67, 0.5) 0%, rgba(57, 60, 67, 0.3) 100%);
   color: #dcddde;
+  padding-left: 12px;
+}
+
+.channel-item:hover::before {
+  height: 60%;
 }
 
 .channel-item.active {
-  background-color: #393c43;
+  background: linear-gradient(90deg, rgba(88, 101, 242, 0.2) 0%, rgba(88, 101, 242, 0.1) 100%);
   color: #fff;
+}
+
+.channel-item.active::before {
+  height: 80%;
 }
 
 .channel-icon {
@@ -156,15 +185,16 @@
 }
 
 .sidebar-user {
-  background-color: #292b2f;
+  background: linear-gradient(180deg, #292b2f 0%, #1e1f22 100%);
   padding: 8px;
-  border-top: 1px solid #202225;
+  border-top: 1px solid rgba(32, 34, 37, 0.6);
   display: flex;
   align-items: center;
   gap: 8px;
   position: relative;
   z-index: 10; /* Чтобы был поверх списка серверов */
   flex-shrink: 0; /* Не сжимается */
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
 }
 
 .user-info {
@@ -178,13 +208,19 @@
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background-color: #5865f2;
+  background: linear-gradient(135deg, #5865f2 0%, #4752c4 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
   font-weight: 600;
   font-size: 14px;
+  box-shadow: 0 2px 6px rgba(88, 101, 242, 0.4);
+  transition: transform 0.2s;
+}
+
+.user-avatar:hover {
+  transform: scale(1.1);
 }
 
 .user-details {
@@ -229,20 +265,44 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.8);
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1002;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .modal-content {
-  background-color: #2f3136;
-  border-radius: 8px;
-  padding: 24px;
+  background: linear-gradient(135deg, #2f3136 0%, #36393f 100%);
+  border-radius: 16px;
+  padding: 32px;
   width: 90%;
   max-width: 400px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }
 
 .modal-content h3 {
@@ -253,19 +313,22 @@
 
 .modal-content input {
   width: 100%;
-  background-color: #202225;
-  border: none;
-  border-radius: 4px;
-  padding: 12px;
+  background: linear-gradient(135deg, #202225 0%, #1e1f22 100%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 14px;
   color: #dcddde;
   font-size: 16px;
   outline: none;
   margin-bottom: 16px;
+  transition: all 0.3s;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .modal-content input:focus {
-  background-color: #1e1f22;
-  border: 1px solid #5865f2;
+  background: linear-gradient(135deg, #1e1f22 0%, #202225 100%);
+  border-color: rgba(88, 101, 242, 0.5);
+  box-shadow: 0 0 0 3px rgba(88, 101, 242, 0.1), inset 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .modal-buttons {
@@ -294,12 +357,15 @@
 }
 
 .modal-buttons button[type="submit"] {
-  background-color: #5865f2;
+  background: linear-gradient(135deg, #5865f2 0%, #4752c4 100%);
   color: #fff;
+  box-shadow: 0 2px 6px rgba(88, 101, 242, 0.3);
 }
 
 .modal-buttons button[type="submit"]:hover {
-  background-color: #4752c4;
+  background: linear-gradient(135deg, #4752c4 0%, #3c45a5 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(88, 101, 242, 0.4);
 }
 
 .users-list {
@@ -313,14 +379,15 @@
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: 6px;
   color: #8e9297;
-  transition: all 0.2s;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .user-item:hover {
-  background-color: #393c43;
+  background: linear-gradient(90deg, rgba(57, 60, 67, 0.5) 0%, rgba(57, 60, 67, 0.3) 100%);
   color: #dcddde;
+  transform: translateX(4px);
 }
 
 .user-status-indicator {
