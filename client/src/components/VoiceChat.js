@@ -23,6 +23,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
   const peerConnections = useRef(new Map());
   const localVideoRef = useRef(null);
   const remoteVideoRefs = useRef(new Map());
+  const remoteStreamsRef = useRef(new Map()); // Резервное хранилище потоков
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const animationFrameIdRef = useRef(null);
@@ -109,18 +110,34 @@ function VoiceChat({ channelId, channelName, socket, user }) {
           }, { once: false });
         });
         
-        // Сохраняем поток и убеждаемся, что он не удаляется
+        // ВАЖНО: Сохраняем поток в ref СНАЧАЛА для немедленного доступа
+        remoteStreamsRef.current.set(socketId, remoteStream);
+        console.log('💾 Сохраняю поток в ref для:', socketId, 'всего потоков в ref:', remoteStreamsRef.current.size);
+        
+        // Затем обновляем state (создаем новую Map для React)
         setRemoteStreams(prevStreams => {
           const newStreams = new Map(prevStreams);
           newStreams.set(socketId, remoteStream);
-          console.log('💾 Сохраняю поток для:', socketId, 'всего потоков:', newStreams.size);
+          console.log('💾 Сохраняю поток в state для:', socketId, 'всего потоков в state:', newStreams.size);
+          console.log('  Проверка: поток в новой Map?', newStreams.has(socketId));
           return newStreams;
         });
         
-        // Дополнительно сохраняем поток в ref для надежности
-        if (!pc._remoteStream) {
-          pc._remoteStream = remoteStream;
-        }
+        // Дополнительно сохраняем поток в peer connection для надежности
+        pc._remoteStream = remoteStream;
+        
+        // Принудительно обновляем компонент через небольшой таймаут
+        setTimeout(() => {
+          setRemoteStreams(current => {
+            if (!current.has(socketId)) {
+              console.warn('⚠️ Поток потерян в state, восстанавливаю из ref');
+              const restored = new Map(current);
+              restored.set(socketId, remoteStream);
+              return restored;
+            }
+            return current;
+          });
+        }, 100);
       }
     };
 
@@ -865,15 +882,34 @@ function VoiceChat({ channelId, channelName, socket, user }) {
 
   // Обновляем audio элементы когда появляются удаленные потоки
   useEffect(() => {
-    console.log('🔄 useEffect для remoteStreams вызван, потоков:', remoteStreams.size);
+    console.log('🔄 useEffect для remoteStreams вызван, потоков в state:', remoteStreams.size, 'в ref:', remoteStreamsRef.current.size);
+    
+    // Если в state нет потоков, но в ref есть - восстанавливаем
+    if (remoteStreams.size === 0 && remoteStreamsRef.current.size > 0) {
+      console.warn('⚠️ Потоки потеряны в state, но есть в ref. Восстанавливаю...');
+      setRemoteStreams(new Map(remoteStreamsRef.current));
+      return;
+    }
+    
     if (remoteStreams.size === 0) {
       console.warn('⚠️ Нет удаленных потоков! Проверьте, что peer connections установлены.');
+      console.warn('  Peer connections:', Array.from(peerConnections.current.keys()));
+      console.warn('  Потоки в ref:', Array.from(remoteStreamsRef.current.keys()));
     }
     
     const intervals = new Map();
     
-    remoteStreams.forEach((stream, socketId) => {
+    // Используем потоки из ref если state пустой
+    const streamsToProcess = remoteStreams.size > 0 ? remoteStreams : remoteStreamsRef.current;
+    console.log('📋 Обрабатываю потоки из:', remoteStreams.size > 0 ? 'state' : 'ref', 'количество:', streamsToProcess.size);
+    
+    streamsToProcess.forEach((stream, socketId) => {
       // Проверяем, что поток все еще активен
+      if (!stream || !stream.getTracks) {
+        console.warn('⚠️ Некорректный поток для', socketId);
+        return;
+      }
+      
       const tracks = stream.getTracks();
       if (tracks.length === 0) {
         console.warn('⚠️ Поток для', socketId, 'не имеет треков!');
@@ -883,6 +919,11 @@ function VoiceChat({ channelId, channelName, socket, user }) {
       const activeTracks = tracks.filter(t => t.readyState === 'live');
       if (activeTracks.length === 0) {
         console.warn('⚠️ Нет активных треков для', socketId);
+      }
+      
+      // Обновляем ref если поток из state
+      if (remoteStreams.has(socketId)) {
+        remoteStreamsRef.current.set(socketId, stream);
       }
       
       let audioElement = remoteVideoRefs.current.get(socketId);
@@ -947,10 +988,21 @@ function VoiceChat({ channelId, channelName, socket, user }) {
       if (!intervals.has(socketId)) {
         const checkInterval = setInterval(() => {
           const el = remoteVideoRefs.current.get(socketId);
-          const currentStream = remoteStreams.get(socketId);
+          // Проверяем сначала в ref, потом в state
+          const currentStream = remoteStreamsRef.current.get(socketId) || remoteStreams.get(socketId);
           
           if (!currentStream) {
-            console.warn('⚠️ Поток исчез для:', socketId);
+            console.warn('⚠️ Поток исчез для:', socketId, 'проверяю peer connection...');
+            const pc = peerConnections.current.get(socketId);
+            if (pc && pc._remoteStream) {
+              console.log('  Восстанавливаю поток из peer connection');
+              remoteStreamsRef.current.set(socketId, pc._remoteStream);
+              setRemoteStreams(prev => {
+                const newMap = new Map(prev);
+                newMap.set(socketId, pc._remoteStream);
+                return newMap;
+              });
+            }
             return;
           }
           
