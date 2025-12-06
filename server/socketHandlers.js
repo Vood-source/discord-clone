@@ -8,28 +8,54 @@ function setupSocketHandlers(io) {
   io.on('connection', (socket) => {
     console.log(`👤 Пользователь подключен: ${socket.id}`);
 
-    // Регистрация пользователя
+    // Регистрация пользователя с валидацией
     socket.on('register', async (userData) => {
+      // Валидация данных
+      if (!userData || !userData.username) {
+        socket.emit('error', { message: 'Имя пользователя обязательно' });
+        return;
+      }
+
+      const username = String(userData.username).trim();
+      
+      // Валидация имени пользователя
+      if (username.length < 2 || username.length > 30) {
+        socket.emit('error', { message: 'Имя пользователя должно быть от 2 до 30 символов' });
+        return;
+      }
+
+      // Проверка на допустимые символы (буквы, цифры, подчеркивание)
+      if (!/^[a-zA-Zа-яА-ЯёЁ0-9_]+$/.test(username)) {
+        socket.emit('error', { message: 'Имя может содержать только буквы, цифры и подчеркивание' });
+        return;
+      }
+
       const db = getDatabase();
       const userId = uuidv4();
       
       db.run(
         "INSERT INTO users (id, username, email) VALUES (?, ?, ?)",
-        [userId, userData.username, userData.email || null],
+        [userId, username, userData.email || null],
         function(err) {
           if (err) {
-            socket.emit('error', { message: 'Ошибка регистрации' });
+            // Проверка на дублирование username
+            if (err.message && err.message.includes('UNIQUE constraint')) {
+              socket.emit('error', { message: 'Имя пользователя уже занято' });
+            } else {
+              console.error('Ошибка регистрации:', err);
+              socket.emit('error', { message: 'Ошибка регистрации' });
+            }
             return;
           }
           
           users.set(socket.id, {
             id: userId,
-            username: userData.username,
+            username: username,
             socketId: socket.id
           });
           
-          socket.emit('registered', { userId, username: userData.username });
-          socket.broadcast.emit('user_joined', { userId, username: userData.username });
+          socket.emit('registered', { userId, username: username });
+          socket.broadcast.emit('user_joined', { userId, username: username });
           
           // Отправляем обновленный список пользователей онлайн
           const onlineUsers = Array.from(users.values()).map(u => ({
@@ -51,11 +77,18 @@ function setupSocketHandlers(io) {
       });
     });
 
-    // Создание нового сервера
+    // Создание нового сервера с валидацией
     socket.on('create_server', (serverData) => {
       const user = users.get(socket.id);
       if (!user) {
         socket.emit('error', { message: 'Пользователь не авторизован' });
+        return;
+      }
+
+      // Валидация названия сервера
+      const serverName = serverData?.name ? String(serverData.name).trim() : 'Новый сервер';
+      if (serverName.length === 0 || serverName.length > 100) {
+        socket.emit('error', { message: 'Название сервера должно быть от 1 до 100 символов' });
         return;
       }
 
@@ -64,16 +97,17 @@ function setupSocketHandlers(io) {
       
       db.run(
         "INSERT INTO servers (id, name, owner_id) VALUES (?, ?, ?)",
-        [serverId, serverData.name || 'Новый сервер', user.id],
+        [serverId, serverName, user.id],
         function(err) {
           if (err) {
+            console.error('Ошибка создания сервера:', err);
             socket.emit('error', { message: 'Ошибка создания сервера' });
             return;
           }
 
           const server = {
             id: serverId,
-            name: serverData.name || 'Новый сервер',
+            name: serverName,
             owner_id: user.id,
             created_at: new Date().toISOString()
           };
@@ -83,7 +117,10 @@ function setupSocketHandlers(io) {
           db.run(
             "INSERT INTO channels (id, server_id, name, type) VALUES (?, ?, ?, ?)",
             [defaultChannelId, serverId, 'общий', 'text'],
-            () => {
+            (err) => {
+              if (err) {
+                console.error('Ошибка создания канала по умолчанию:', err);
+              }
               io.emit('server_created', server);
             }
           );
@@ -105,11 +142,28 @@ function setupSocketHandlers(io) {
       );
     });
 
-    // Создание нового канала
+    // Создание нового канала с валидацией
     socket.on('create_channel', (channelData) => {
       const user = users.get(socket.id);
       if (!user) {
         socket.emit('error', { message: 'Пользователь не авторизован' });
+        return;
+      }
+
+      // Валидация данных
+      if (!channelData || !channelData.serverId) {
+        socket.emit('error', { message: 'Не указан ID сервера' });
+        return;
+      }
+
+      const channelName = channelData.name ? String(channelData.name).trim() : 'новый-канал';
+      const channelType = (channelData.type === 'voice' || channelData.type === 'text') 
+        ? channelData.type 
+        : 'text';
+
+      // Валидация названия канала
+      if (channelName.length === 0 || channelName.length > 50) {
+        socket.emit('error', { message: 'Название канала должно быть от 1 до 50 символов' });
         return;
       }
 
@@ -118,9 +172,10 @@ function setupSocketHandlers(io) {
       
       db.run(
         "INSERT INTO channels (id, server_id, name, type) VALUES (?, ?, ?, ?)",
-        [channelId, channelData.serverId, channelData.name || 'новый-канал', channelData.type || 'text'],
+        [channelId, channelData.serverId, channelName, channelType],
         function(err) {
           if (err) {
+            console.error('Ошибка создания канала:', err);
             socket.emit('error', { message: 'Ошибка создания канала' });
             return;
           }
@@ -128,8 +183,8 @@ function setupSocketHandlers(io) {
           const channel = {
             id: channelId,
             server_id: channelData.serverId,
-            name: channelData.name || 'новый-канал',
-            type: channelData.type || 'text',
+            name: channelName,
+            type: channelType,
             created_at: new Date().toISOString()
           };
 
@@ -138,30 +193,60 @@ function setupSocketHandlers(io) {
       );
     });
 
-    // Получение сообщений канала
-    socket.on('get_messages', (channelId) => {
+    // Получение сообщений канала с оптимизацией
+    socket.on('get_messages', (data) => {
+      const channelId = typeof data === 'string' ? data : data?.channelId;
+      const limit = (typeof data === 'object' && data?.limit) ? Math.min(data.limit, 100) : 50;
+      const offset = (typeof data === 'object' && data?.offset) ? Math.max(data.offset, 0) : 0;
+      
+      if (!channelId) {
+        socket.emit('error', { message: 'Не указан ID канала' });
+        return;
+      }
+
       const db = getDatabase();
+      // Используем индекс для быстрого поиска по channel_id и created_at
       db.all(
         `SELECT m.*, u.username, u.avatar 
          FROM messages m 
          JOIN users u ON m.user_id = u.id 
          WHERE m.channel_id = ? 
          ORDER BY m.created_at DESC 
-         LIMIT 50`,
-        [channelId],
+         LIMIT ? OFFSET ?`,
+        [channelId, limit, offset],
         (err, messages) => {
-          if (!err) {
-            socket.emit('messages_list', (messages || []).reverse());
+          if (err) {
+            console.error('Ошибка получения сообщений:', err);
+            socket.emit('error', { message: 'Ошибка получения сообщений' });
+            return;
           }
+          socket.emit('messages_list', (messages || []).reverse());
         }
       );
     });
 
-    // Отправка сообщения
+    // Отправка сообщения с валидацией
     socket.on('send_message', (data) => {
       const user = users.get(socket.id);
       if (!user) {
         socket.emit('error', { message: 'Пользователь не авторизован' });
+        return;
+      }
+
+      // Валидация данных
+      if (!data || !data.channelId || !data.content) {
+        socket.emit('error', { message: 'Неверные данные сообщения' });
+        return;
+      }
+
+      // Ограничение длины сообщения
+      const content = String(data.content).trim();
+      if (content.length === 0) {
+        socket.emit('error', { message: 'Сообщение не может быть пустым' });
+        return;
+      }
+      if (content.length > 2000) {
+        socket.emit('error', { message: 'Сообщение слишком длинное (максимум 2000 символов)' });
         return;
       }
 
@@ -170,9 +255,10 @@ function setupSocketHandlers(io) {
       
       db.run(
         "INSERT INTO messages (id, channel_id, user_id, content) VALUES (?, ?, ?, ?)",
-        [messageId, data.channelId, user.id, data.content],
+        [messageId, data.channelId, user.id, content],
         function(err) {
           if (err) {
+            console.error('Ошибка отправки сообщения:', err);
             socket.emit('error', { message: 'Ошибка отправки сообщения' });
             return;
           }
@@ -182,7 +268,7 @@ function setupSocketHandlers(io) {
             channel_id: data.channelId,
             user_id: user.id,
             username: user.username,
-            content: data.content,
+            content: content,
             created_at: new Date().toISOString()
           };
 
@@ -281,6 +367,11 @@ function setupSocketHandlers(io) {
     });
 
     // Голосовой чат - WebRTC сигналы
+    socket.on('voice_error', (data) => {
+      console.error(`🚨 Ошибка голосового чата в канале ${data.channelId}:`, data.error);
+      // Можно добавить логирование в базу данных здесь
+    });
+
     socket.on('voice_signal', (data) => {
       if (data.to) {
         // Отправляем конкретному пользователю
@@ -314,16 +405,9 @@ function setupSocketHandlers(io) {
       });
     });
 
-    // Отключение
+    // Отключение с оптимизированной очисткой
     socket.on('disconnect', () => {
       const user = users.get(socket.id);
-      if (user) {
-        socket.broadcast.emit('user_left', { userId: user.id });
-        socket.broadcast.emit('online_users_list', Array.from(users.values()).filter(u => u.socketId !== socket.id).map(u => ({
-          id: u.id,
-          username: u.username
-        })));
-      }
       
       // Удаляем из всех голосовых комнат
       voiceRooms.forEach((members, channelId) => {
@@ -332,10 +416,27 @@ function setupSocketHandlers(io) {
           socket.to(`voice_${channelId}`).emit('user_left_voice', {
             socketId: socket.id
           });
+          // Удаляем комнату, если она пустая
+          if (members.size === 0) {
+            voiceRooms.delete(channelId);
+          }
         }
       });
       
-      users.delete(socket.id);
+      if (user) {
+        socket.broadcast.emit('user_left', { userId: user.id });
+        
+        // Оптимизированное обновление списка пользователей
+        users.delete(socket.id);
+        const onlineUsers = Array.from(users.values()).map(u => ({
+          id: u.id,
+          username: u.username
+        }));
+        socket.broadcast.emit('online_users_list', onlineUsers);
+      } else {
+        users.delete(socket.id);
+      }
+      
       console.log(`👋 Пользователь отключен: ${socket.id}`);
     });
   });

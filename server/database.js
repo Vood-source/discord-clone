@@ -88,6 +88,15 @@ function createTables() {
     )
   `);
 
+  // Создание индексов для оптимизации запросов
+  db.run(`CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at DESC)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_channels_server ON channels(server_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_channels_type ON channels(type)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_server_members_server ON server_members(server_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_server_members_user ON server_members(user_id)`);
+
   // Создаем тестовый сервер и каналы
   setTimeout(() => {
     createDefaultServer();

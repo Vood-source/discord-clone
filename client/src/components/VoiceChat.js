@@ -1,5 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './VoiceChat.css';
+
+// Конфигурация ICE серверов вынесена в константу для переиспользования
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  }
+];
 
 function VoiceChat({ channelId, channelName, socket, user }) {
   const [isConnected, setIsConnected] = useState(false);
@@ -8,134 +19,44 @@ function VoiceChat({ channelId, channelName, socket, user }) {
   const [remoteStreams, setRemoteStreams] = useState(new Map());
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [micPermissionError, setMicPermissionError] = useState(null);
   const peerConnections = useRef(new Map());
   const localVideoRef = useRef(null);
   const remoteVideoRefs = useRef(new Map());
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
+  const animationFrameIdRef = useRef(null);
+  const isMountedRef = useRef(true);
 
-  useEffect(() => {
-    socket.on('voice_joined', () => {
-      setIsConnected(true);
-    });
-
-    socket.on('user_joined_voice', (data) => {
-      setParticipants(prev => [...prev, data]);
-      if (data.socketId !== socket.id) {
-        createPeerConnection(data.socketId);
-      }
-    });
-
-    socket.on('user_left_voice', (data) => {
-      setParticipants(prev => prev.filter(p => p.socketId !== data.socketId));
-      if (peerConnections.current.has(data.socketId)) {
-        peerConnections.current.get(data.socketId).close();
-        peerConnections.current.delete(data.socketId);
-      }
-      if (remoteStreams.has(data.socketId)) {
-        const newStreams = new Map(remoteStreams);
-        newStreams.delete(data.socketId);
-        setRemoteStreams(newStreams);
-      }
-    });
-
-    socket.on('voice_signal', async (data) => {
-      if (data.from === socket.id) return; // Игнорируем свои сигналы
-      
-      let pc = peerConnections.current.get(data.from);
-      
-      // Создаем новое соединение, если его еще нет
-      if (!pc) {
-        pc = new RTCPeerConnection({
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-          ]
-        });
-
-        pc.ontrack = (event) => {
-          const newStreams = new Map(remoteStreams);
-          newStreams.set(data.from, event.streams[0]);
-          setRemoteStreams(newStreams);
-        };
-
-        pc.onicecandidate = (event) => {
-          if (event.candidate) {
-            socket.emit('voice_signal', {
-              channelId,
-              signal: {
-                type: 'ice-candidate',
-                candidate: event.candidate
-              },
-              to: data.from
-            });
-          }
-        };
-
-        peerConnections.current.set(data.from, pc);
-        
-        if (localStream) {
-          localStream.getTracks().forEach(track => {
-            pc.addTrack(track, localStream);
-          });
-        }
-      }
-
-      try {
-        if (data.signal.type === 'offer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          socket.emit('voice_signal', {
-            channelId,
-            signal: answer,
-            to: data.from
-          });
-        } else if (data.signal.type === 'answer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
-        } else if (data.signal.type === 'ice-candidate') {
-          await pc.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
-        }
-      } catch (error) {
-        console.error('Ошибка обработки сигнала:', error);
-      }
-    });
-
-    return () => {
-      socket.off('voice_joined');
-      socket.off('user_joined_voice');
-      socket.off('user_left_voice');
-      socket.off('voice_signal');
-    };
-  }, [socket]);
-
-  const createPeerConnection = async (socketId) => {
+  // Единая функция создания RTCPeerConnection (убрано дублирование)
+  const createRTCPeerConnection = useCallback((socketId, isInitiator = false) => {
     // Проверяем, не создано ли уже соединение
     if (peerConnections.current.has(socketId)) {
-      return;
+      return peerConnections.current.get(socketId);
     }
 
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ]
-    });
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
+    // Добавляем локальный поток, если он есть
     if (localStream) {
       localStream.getTracks().forEach(track => {
         pc.addTrack(track, localStream);
       });
     }
 
+    // Обработчик получения удаленного потока
     pc.ontrack = (event) => {
-      const newStreams = new Map(remoteStreams);
-      newStreams.set(socketId, event.streams[0]);
-      setRemoteStreams(newStreams);
+      if (!isMountedRef.current) return;
+      setRemoteStreams(prevStreams => {
+        const newStreams = new Map(prevStreams);
+        newStreams.set(socketId, event.streams[0]);
+        return newStreams;
+      });
     };
 
+    // Обработчик ICE кандидатов
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
+      if (event.candidate && socket && socket.connected) {
         socket.emit('voice_signal', {
           channelId,
           signal: {
@@ -147,114 +68,470 @@ function VoiceChat({ channelId, channelName, socket, user }) {
       }
     };
 
+    // Обработка ошибок соединения
+    pc.onerror = (error) => {
+      console.error('RTCPeerConnection error:', error);
+    };
+
+    // Обработка закрытия соединения
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        console.warn(`Peer connection ${socketId} state: ${pc.connectionState}`);
+      }
+    };
+
     peerConnections.current.set(socketId, pc);
+    return pc;
+  }, [channelId, localStream, socket]);
+
+  // Создание peer connection с инициацией offer
+  const createPeerConnection = useCallback(async (socketId) => {
+    if (peerConnections.current.has(socketId)) {
+      return;
+    }
+
+    const pc = createRTCPeerConnection(socketId, true);
 
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      socket.emit('voice_signal', {
-        channelId,
-        signal: offer,
-        to: socketId
-      });
+      if (socket && socket.connected) {
+        socket.emit('voice_signal', {
+          channelId,
+          signal: offer,
+          to: socketId
+        });
+      }
     } catch (error) {
       console.error('Ошибка создания offer:', error);
+      // Очищаем соединение при ошибке
+      if (peerConnections.current.has(socketId)) {
+        peerConnections.current.get(socketId).close();
+        peerConnections.current.delete(socketId);
+      }
+      if (socket && socket.connected) {
+        socket.emit('voice_error', {
+          channelId,
+          error: error.message,
+          type: 'offer_creation'
+        });
+      }
     }
-  };
+  }, [channelId, socket, createRTCPeerConnection]);
+
+  // Обработка WebRTC сигналов
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleVoiceJoined = () => {
+      if (isMountedRef.current) {
+        setIsConnected(true);
+      }
+    };
+
+    const handleUserJoinedVoice = (data) => {
+      if (!isMountedRef.current) return;
+      
+      // Проверяем, что это не мы сами
+      const currentSocketId = socket.id;
+      if (!currentSocketId || data.socketId === currentSocketId) {
+        return;
+      }
+
+      setParticipants(prev => {
+        // Предотвращаем дублирование участников
+        if (prev.some(p => p.socketId === data.socketId)) {
+          return prev;
+        }
+        return [...prev, data];
+      });
+      
+      createPeerConnection(data.socketId);
+    };
+
+    const handleUserLeftVoice = (data) => {
+      if (!isMountedRef.current) return;
+      
+      setParticipants(prev => prev.filter(p => p.socketId !== data.socketId));
+      
+      // Очищаем peer connection
+      const pc = peerConnections.current.get(data.socketId);
+      if (pc) {
+        pc.close();
+        peerConnections.current.delete(data.socketId);
+      }
+      
+      // Очищаем удаленный поток
+      setRemoteStreams(prevStreams => {
+        const newStreams = new Map(prevStreams);
+        newStreams.delete(data.socketId);
+        return newStreams;
+      });
+    };
+
+    const handleVoiceSignal = async (data) => {
+      if (!isMountedRef.current) return;
+      
+      const currentSocketId = socket.id;
+      if (!currentSocketId || data.from === currentSocketId) {
+        return; // Игнорируем свои сигналы
+      }
+
+      let pc = peerConnections.current.get(data.from);
+
+      // Создаем новое соединение, если его еще нет (используем единую функцию)
+      if (!pc) {
+        pc = createRTCPeerConnection(data.from, false);
+      }
+
+      try {
+        if (data.signal.type === 'offer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          if (socket && socket.connected) {
+            socket.emit('voice_signal', {
+              channelId,
+              signal: answer,
+              to: data.from
+            });
+          }
+        } else if (data.signal.type === 'answer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
+        } else if (data.signal.type === 'ice-candidate') {
+          if (data.signal.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
+          }
+        }
+      } catch (error) {
+        console.error('Ошибка обработки сигнала:', error);
+        // Очищаем соединение при критической ошибке
+        if (error.name === 'InvalidStateError' || error.name === 'OperationError') {
+          if (peerConnections.current.has(data.from)) {
+            peerConnections.current.get(data.from).close();
+            peerConnections.current.delete(data.from);
+          }
+        }
+        if (socket && socket.connected) {
+          socket.emit('voice_error', {
+            channelId,
+            error: error.message,
+            type: 'signal_processing'
+          });
+        }
+      }
+    };
+
+    socket.on('voice_joined', handleVoiceJoined);
+    socket.on('user_joined_voice', handleUserJoinedVoice);
+    socket.on('user_left_voice', handleUserLeftVoice);
+    socket.on('voice_signal', handleVoiceSignal);
+
+    return () => {
+      socket.off('voice_joined', handleVoiceJoined);
+      socket.off('user_joined_voice', handleUserJoinedVoice);
+      socket.off('user_left_voice', handleUserLeftVoice);
+      socket.off('voice_signal', handleVoiceSignal);
+    };
+  }, [socket, channelId, createPeerConnection, createRTCPeerConnection]);
+
+  // Проверка разрешений при монтировании компонента
+  useEffect(() => {
+    checkMicrophonePermission();
+  }, []);
+
+  // Запуск анализатора речи
+  useEffect(() => {
+    if (!localStream || !isConnected) {
+      // Останавливаем анализ, если нет потока или не подключены
+      if (animationFrameIdRef.current) {
+        cancelAnimationFrame(animationFrameIdRef.current);
+        animationFrameIdRef.current = null;
+      }
+      return;
+    }
+
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const analyser = audioContext.createAnalyser();
+      const source = audioContext.createMediaStreamSource(localStream);
+      source.connect(analyser);
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.8;
+      
+      audioContextRef.current = audioContext;
+      analyserRef.current = analyser;
+
+      // Проверка активности речи с оптимизацией
+      const checkSpeaking = () => {
+        if (!isMountedRef.current || !analyserRef.current) {
+          return;
+        }
+        
+        const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+        analyserRef.current.getByteFrequencyData(dataArray);
+        
+        // Оптимизированный расчет среднего значения
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / dataArray.length;
+        
+        const muted = localStream?.getAudioTracks()[0]?.enabled === false;
+        if (isMountedRef.current) {
+          setIsSpeaking(!muted && average > 20);
+        }
+        
+        animationFrameIdRef.current = requestAnimationFrame(checkSpeaking);
+      };
+      
+      checkSpeaking();
+    } catch (e) {
+      console.log('Анализатор аудио недоступен:', e);
+    }
+
+    return () => {
+      if (animationFrameIdRef.current) {
+        cancelAnimationFrame(animationFrameIdRef.current);
+        animationFrameIdRef.current = null;
+      }
+    };
+  }, [localStream, isConnected]);
 
   const joinVoice = async () => {
+    // Проверяем доступность mediaDevices API
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      // Fallback для старых браузеров
+      const getUserMedia = navigator.mediaDevices?.getUserMedia || 
+                           navigator.getUserMedia || 
+                           navigator.webkitGetUserMedia || 
+                           navigator.mozGetUserMedia;
+      
+      if (!getUserMedia) {
+        const errorMsg = 'Ваш браузер не поддерживает доступ к микрофону. Используйте современный браузер (Chrome, Firefox, Edge).';
+        console.error(errorMsg);
+        alert(errorMsg);
+        return;
+      }
+    }
+
+    // Проверяем, что мы на localhost или HTTPS (требование браузеров)
+    const isSecureContext = window.isSecureContext || 
+                            window.location.protocol === 'https:' || 
+                            window.location.hostname === 'localhost' || 
+                            window.location.hostname === '127.0.0.1' ||
+                            window.location.hostname === '[::1]';
+    
+    if (!isSecureContext) {
+      const errorMsg = 'Для доступа к микрофону требуется HTTPS соединение или localhost.\n' +
+                       'Текущий протокол: ' + window.location.protocol + '\n' +
+                       'Текущий хост: ' + window.location.hostname;
+      console.error(errorMsg);
+      alert(errorMsg);
+      return;
+    }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false
-      });
+      console.log('Запрос доступа к микрофону...');
+      console.log('Протокол:', window.location.protocol);
+      console.log('Хост:', window.location.hostname);
+      console.log('Secure context:', window.isSecureContext);
+      
+      // Сначала пробуем с полными настройками
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          },
+          video: false
+        });
+      } catch (constraintError) {
+        // Если не получилось с настройками, пробуем без них
+        console.warn('Не удалось получить доступ с настройками, пробуем без них:', constraintError);
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false
+        });
+      }
+      
+      console.log('Доступ к микрофону получен:', stream);
+      
+      if (!isMountedRef.current) {
+        // Если компонент размонтирован, останавливаем поток
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      
       setLocalStream(stream);
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
 
-      // Настройка анализатора для определения активности речи
-      try {
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        const analyser = audioContext.createAnalyser();
-        const source = audioContext.createMediaStreamSource(stream);
-        source.connect(analyser);
-        analyser.fftSize = 256;
-        
-        audioContextRef.current = audioContext;
-        analyserRef.current = analyser;
-
-        // Проверка активности речи
-        let animationFrameId;
-        const checkSpeaking = () => {
-          if (analyserRef.current) {
-            const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-            analyserRef.current.getByteFrequencyData(dataArray);
-            const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-            const muted = localStream?.getAudioTracks()[0]?.enabled === false;
-            setIsSpeaking(!muted && average > 20);
-          }
-          animationFrameId = requestAnimationFrame(checkSpeaking);
-        };
-        checkSpeaking();
-
-        return () => {
-          if (animationFrameId) {
-            cancelAnimationFrame(animationFrameId);
-          }
-        };
-      } catch (e) {
-        console.log('Анализатор аудио недоступен');
+      if (socket && socket.connected) {
+        socket.emit('join_voice', channelId);
       }
-
-      socket.emit('join_voice', channelId);
+      
+      // Очищаем предыдущие ошибки
+      setMicPermissionError(null);
     } catch (error) {
       console.error('Ошибка доступа к микрофону:', error);
-      alert('Не удалось получить доступ к микрофону. Проверьте разрешения.');
+      console.error('Тип ошибки:', error.name);
+      console.error('Сообщение:', error.message);
+      console.error('Стек:', error.stack);
+      
+      let errorMessage = 'Не удалось получить доступ к микрофону.';
+      
+      switch (error.name) {
+        case 'NotAllowedError':
+        case 'PermissionDeniedError':
+          errorMessage = 'Доступ к микрофону запрещен.\n\n' +
+            'Как разрешить:\n' +
+            '1. Нажмите на иконку замка 🔒 или информации ℹ️ в адресной строке\n' +
+            '2. Найдите "Микрофон" в настройках сайта\n' +
+            '3. Выберите "Разрешить" или "Спрашивать"\n' +
+            '4. Обновите страницу (F5) и попробуйте снова\n\n' +
+            'Или в настройках браузера:\n' +
+            'Chrome: Настройки → Конфиденциальность → Настройки сайта → Микрофон\n' +
+            'Firefox: Настройки → Приватность → Разрешения → Микрофон';
+          setMicPermissionError(errorMessage);
+          break;
+        case 'NotFoundError':
+        case 'DevicesNotFoundError':
+          errorMessage = 'Микрофон не найден. Убедитесь, что микрофон подключен и работает.';
+          setMicPermissionError(errorMessage);
+          break;
+        case 'NotReadableError':
+        case 'TrackStartError':
+          errorMessage = 'Микрофон используется другим приложением. Закройте другие программы, использующие микрофон.';
+          setMicPermissionError(errorMessage);
+          break;
+        case 'OverconstrainedError':
+        case 'ConstraintNotSatisfiedError':
+          errorMessage = 'Микрофон не поддерживает требуемые настройки.';
+          setMicPermissionError(errorMessage);
+          break;
+        case 'TypeError':
+          errorMessage = 'Ошибка инициализации микрофона. Попробуйте обновить страницу.';
+          setMicPermissionError(errorMessage);
+          break;
+        default:
+          errorMessage = `Ошибка доступа к микрофону: ${error.message || error.name}`;
+          setMicPermissionError(errorMessage);
+      }
+      
+      alert(errorMessage);
+    }
+  };
+
+  // Проверка разрешений микрофона
+  const checkMicrophonePermission = async () => {
+    if (!navigator.permissions) {
+      console.log('API permissions не поддерживается в этом браузере');
+      return;
+    }
+
+    try {
+      const result = await navigator.permissions.query({ name: 'microphone' });
+      console.log('Статус разрешения микрофона:', result.state);
+      
+      if (result.state === 'denied') {
+        setMicPermissionError('Доступ к микрофону заблокирован. Разрешите доступ в настройках браузера.');
+      } else if (result.state === 'prompt') {
+        setMicPermissionError(null);
+      } else if (result.state === 'granted') {
+        setMicPermissionError(null);
+      }
+      
+      result.onchange = () => {
+        console.log('Статус разрешения изменился:', result.state);
+        if (result.state === 'granted') {
+          setMicPermissionError(null);
+        }
+      };
+    } catch (error) {
+      console.log('Не удалось проверить разрешения:', error);
     }
   };
 
   const toggleMute = () => {
     if (localStream) {
+      const newMutedState = !isMuted;
       localStream.getAudioTracks().forEach(track => {
-        track.enabled = isMuted;
+        track.enabled = newMutedState;
       });
-      setIsMuted(!isMuted);
+      setIsMuted(newMutedState);
     }
   };
 
-  const leaveVoice = () => {
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      setLocalStream(null);
+  // Функция очистки всех ресурсов
+  const cleanupResources = useCallback(() => {
+    // Останавливаем animation frame
+    if (animationFrameIdRef.current) {
+      cancelAnimationFrame(animationFrameIdRef.current);
+      animationFrameIdRef.current = null;
     }
+
+    // Закрываем audio context
     if (audioContextRef.current) {
-      audioContextRef.current.close();
+      try {
+        audioContextRef.current.close();
+      } catch (e) {
+        console.warn('Ошибка при закрытии AudioContext:', e);
+      }
+      audioContextRef.current = null;
     }
-    peerConnections.current.forEach(pc => pc.close());
+
+    // Останавливаем локальный поток
+    if (localStream) {
+      localStream.getTracks().forEach(track => {
+        track.stop();
+      });
+    }
+
+    // Закрываем все peer connections
+    peerConnections.current.forEach(pc => {
+      try {
+        pc.close();
+      } catch (e) {
+        console.warn('Ошибка при закрытии RTCPeerConnection:', e);
+      }
+    });
     peerConnections.current.clear();
+
+    // Очищаем удаленные потоки
     setRemoteStreams(new Map());
+  }, [localStream]);
+
+  const leaveVoice = () => {
+    cleanupResources();
     setIsConnected(false);
     setIsMuted(false);
     setIsSpeaking(false);
-    socket.emit('leave_voice', channelId);
+    setLocalStream(null);
+    
+    if (socket && socket.connected) {
+      socket.emit('leave_voice', channelId);
+    }
   };
 
+  // Очистка при размонтировании компонента или смене канала
   useEffect(() => {
+    isMountedRef.current = true;
+    
     return () => {
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-      }
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
-      peerConnections.current.forEach(pc => pc.close());
-      peerConnections.current.clear();
-      if (isConnected) {
+      isMountedRef.current = false;
+      cleanupResources();
+      
+      // Уведомляем сервер о выходе, если были подключены
+      if (isConnected && socket && socket.connected) {
         socket.emit('leave_voice', channelId);
       }
     };
-  }, []);
+  }, [channelId, isConnected, socket, cleanupResources]);
 
   return (
     <div className="voice-chat">
@@ -271,8 +548,10 @@ function VoiceChat({ channelId, channelName, socket, user }) {
           
           {isConnected && (
             <div className={`participant-card local ${isSpeaking ? 'speaking' : ''}`}>
-              <div className="participant-avatar">
-                {user?.username?.charAt(0).toUpperCase() || 'U'}
+              <div className={`participant-avatar-wrapper ${isSpeaking ? 'speaking' : ''}`}>
+                <div className="participant-avatar">
+                  {user?.username?.charAt(0).toUpperCase() || 'U'}
+                </div>
               </div>
               <div className="participant-info">
                 <div className="participant-name">{user?.username || 'Вы'}</div>
@@ -295,8 +574,10 @@ function VoiceChat({ channelId, channelName, socket, user }) {
 
           {participants.map(participant => (
             <div key={participant.socketId} className="participant-card">
-              <div className="participant-avatar">
-                {participant.username?.charAt(0).toUpperCase() || 'U'}
+              <div className="participant-avatar-wrapper">
+                <div className="participant-avatar">
+                  {participant.username?.charAt(0).toUpperCase() || 'U'}
+                </div>
               </div>
               <div className="participant-info">
                 <div className="participant-name">{participant.username || 'Участник'}</div>
@@ -324,6 +605,18 @@ function VoiceChat({ channelId, channelName, socket, user }) {
         </div>
 
         <div className="voice-controls">
+          {micPermissionError && (
+            <div className="mic-error-message" style={{
+              padding: '10px',
+              marginBottom: '10px',
+              backgroundColor: '#ff4444',
+              color: 'white',
+              borderRadius: '5px',
+              fontSize: '12px'
+            }}>
+              ⚠️ {micPermissionError}
+            </div>
+          )}
           {!isConnected ? (
             <button className="join-voice-btn" onClick={joinVoice}>
               <span>🔊</span>

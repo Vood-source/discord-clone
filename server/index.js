@@ -11,8 +11,12 @@ const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
     origin: "*", // Разрешаем подключения с любых источников
-    methods: ["GET", "POST"]
-  }
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  // Настройки для WebRTC
+  transports: ['websocket', 'polling'],
+  allowEIO3: true
 });
 
 const PORT = process.env.PORT || 5000;
@@ -36,25 +40,35 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Получение IP адреса сервера
+// Получение IP адреса сервера (включая Radmin VPN)
 app.get('/api/server-info', (req, res) => {
   const os = require('os');
   const networkInterfaces = os.networkInterfaces();
   const addresses = [];
+  let radminIP = null;
   
   for (const interfaceName in networkInterfaces) {
     const interfaces = networkInterfaces[interfaceName];
     for (const iface of interfaces) {
       if (iface.family === 'IPv4' && !iface.internal) {
         addresses.push(iface.address);
+        // Определяем Radmin VPN по IP диапазону (обычно начинается с 26.x.x.x)
+        if (iface.address.startsWith('26.') || interfaceName.toLowerCase().includes('radmin')) {
+          radminIP = iface.address;
+        }
       }
     }
   }
   
   res.json({ 
-    ip: addresses[0] || 'localhost',
+    ip: radminIP || addresses[0] || 'localhost',
     port: PORT,
-    allAddresses: addresses
+    allAddresses: addresses,
+    radminIP: radminIP || null,
+    // Подсказка для пользователя
+    hint: radminIP 
+      ? `Radmin VPN обнаружен! Друзья могут подключиться по: http://${radminIP}:3000`
+      : 'Для подключения через Radmin VPN убедитесь, что он запущен и вы подключены к сети'
   });
 });
 
@@ -76,15 +90,23 @@ server.listen(PORT, listenHost, () => {
   const networkInterfaces = os.networkInterfaces();
   let localIP = 'localhost';
   
+  let radminIP = null;
   for (const interfaceName in networkInterfaces) {
     const interfaces = networkInterfaces[interfaceName];
     for (const iface of interfaces) {
       if (iface.family === 'IPv4' && !iface.internal) {
-        localIP = iface.address;
-        break;
+        // Приоритет Radmin VPN IP (обычно начинается с 26.x.x.x)
+        if (iface.address.startsWith('26.') || interfaceName.toLowerCase().includes('radmin')) {
+          radminIP = iface.address;
+          localIP = iface.address;
+          break;
+        }
+        if (!localIP || localIP === 'localhost') {
+          localIP = iface.address;
+        }
       }
     }
-    if (localIP !== 'localhost') break;
+    if (radminIP) break;
   }
   
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
@@ -92,7 +114,13 @@ server.listen(PORT, listenHost, () => {
   if (NODE_ENV === 'development') {
     console.log(`📡 Локальный доступ: http://localhost:${PORT}`);
     console.log(`🌐 Сетевой доступ: http://${localIP}:${PORT}`);
-    console.log(`\n💡 Друзья могут подключиться по адресу: http://${localIP}:3000`);
+    if (radminIP) {
+      console.log(`\n🌟 Radmin VPN обнаружен!`);
+      console.log(`💡 Друзья могут подключиться по адресу: http://${radminIP}:3000`);
+      console.log(`   (Убедитесь, что они подключены к той же сети Radmin VPN)`);
+    } else {
+      console.log(`\n💡 Друзья могут подключиться по адресу: http://${localIP}:3000`);
+    }
     console.log(`   (Убедитесь, что порты ${PORT} и 3000 открыты в файрволе)`);
   } else {
     console.log(`🌐 Приложение доступно на порту ${PORT}`);

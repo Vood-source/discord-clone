@@ -49,11 +49,10 @@
 }
 
 .participant-card.local {
-  border: 2px solid #5865f2;
+  /* Убрали border, чтобы не перекрывать анимацию аватара */
 }
 
 .participant-card.speaking {
-  border-color: #3ba55d;
   background-color: rgba(59, 165, 93, 0.1);
 }
 
@@ -95,6 +94,69 @@
   font-weight: 600;
   font-size: 20px;
   flex-shrink: 0;
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+/* Контейнер для аватара с анимацией */
+.participant-avatar-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1; /* Чтобы анимация была поверх других элементов */
+}
+
+/* Анимация пульсации при разговоре (как в Discord) */
+.participant-avatar-wrapper.speaking::before {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 3px solid #3ba55d;
+  animation: speaking-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  z-index: 0; /* Изменили на 0, чтобы было поверх фона, но под аватаром */
+  pointer-events: none;
+}
+
+.participant-avatar-wrapper.speaking::after {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 3px solid #3ba55d;
+  animation: speaking-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite 0.7s;
+  z-index: 0; /* Изменили на 0, чтобы было поверх фона, но под аватаром */
+  pointer-events: none;
+}
+
+.participant-avatar-wrapper .participant-avatar {
+  position: relative;
+  z-index: 1; /* Аватар поверх анимационных колец */
+}
+
+@keyframes speaking-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+/* Эффект свечения аватара при разговоре */
+.participant-avatar-wrapper.speaking .participant-avatar {
+  background-color: #3ba55d;
+  transition: background-color 0.3s ease;
+}
+
+/* Плавное возвращение цвета когда перестает говорить */
+.participant-avatar-wrapper:not(.speaking) .participant-avatar {
+  transition: background-color 0.5s ease;
 }
 
 .participant-info {
