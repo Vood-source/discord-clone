@@ -80,23 +80,47 @@ function VoiceChat({ channelId, channelName, socket, user }) {
           
           // Обработчик изменения состояния трека
           track.onended = () => {
-            console.log('Трек завершен для:', socketId);
+            console.warn('⚠️ Трек завершен для:', socketId, 'попытка восстановить...');
+            // Пытаемся получить трек из потока снова
+            const currentStream = remoteStreams.get(socketId);
+            if (currentStream && currentStream.getTracks().length > 0) {
+              console.log('  Трек все еще в потоке, возможно это временная проблема');
+            } else {
+              console.error('  ❌ Поток потерян!');
+            }
           };
           
           track.onmute = () => {
             console.warn('⚠️ Трек заглушен для:', socketId);
+            // Пытаемся разглушить
+            if (track.enabled) {
+              console.log('  Трек enabled, но muted - это может быть проблемой браузера');
+            }
           };
           
           track.onunmute = () => {
             console.log('✅ Трек разглушен для:', socketId);
           };
+          
+          // Предотвращаем завершение трека
+          track.addEventListener('ended', (e) => {
+            console.warn('⚠️ Событие ended для трека:', track.id);
+            e.preventDefault();
+          }, { once: false });
         });
         
+        // Сохраняем поток и убеждаемся, что он не удаляется
         setRemoteStreams(prevStreams => {
           const newStreams = new Map(prevStreams);
           newStreams.set(socketId, remoteStream);
+          console.log('💾 Сохраняю поток для:', socketId, 'всего потоков:', newStreams.size);
           return newStreams;
         });
+        
+        // Дополнительно сохраняем поток в ref для надежности
+        if (!pc._remoteStream) {
+          pc._remoteStream = remoteStream;
+        }
       }
     };
 
@@ -337,19 +361,25 @@ function VoiceChat({ channelId, channelName, socket, user }) {
     const handleUserLeftVoice = (data) => {
       if (!isMountedRef.current) return;
       
+      console.log('👋 Пользователь покинул голосовой канал:', data.socketId);
+      
       setParticipants(prev => prev.filter(p => p.socketId !== data.socketId));
       
       // Очищаем peer connection
       const pc = peerConnections.current.get(data.socketId);
       if (pc) {
+        console.log('Закрываю peer connection для:', data.socketId);
         pc.close();
         peerConnections.current.delete(data.socketId);
       }
       
-      // Очищаем удаленный поток
+      // Очищаем удаленный поток только если пользователь действительно ушел
       setRemoteStreams(prevStreams => {
         const newStreams = new Map(prevStreams);
-        newStreams.delete(data.socketId);
+        if (newStreams.has(data.socketId)) {
+          console.log('Удаляю поток для покинувшего пользователя:', data.socketId);
+          newStreams.delete(data.socketId);
+        }
         return newStreams;
       });
     };
@@ -790,8 +820,9 @@ function VoiceChat({ channelId, channelName, socket, user }) {
     });
     peerConnections.current.clear();
 
-    // Очищаем удаленные потоки
-    setRemoteStreams(new Map());
+    // НЕ очищаем удаленные потоки при cleanup - они могут быть нужны
+    // setRemoteStreams(new Map());
+    console.log('🧹 Cleanup ресурсов, но сохраняю remote streams');
   }, [localStream]);
 
   const leaveVoice = () => {
@@ -835,12 +866,32 @@ function VoiceChat({ channelId, channelName, socket, user }) {
   // Обновляем audio элементы когда появляются удаленные потоки
   useEffect(() => {
     console.log('🔄 useEffect для remoteStreams вызван, потоков:', remoteStreams.size);
+    if (remoteStreams.size === 0) {
+      console.warn('⚠️ Нет удаленных потоков! Проверьте, что peer connections установлены.');
+    }
+    
     const intervals = new Map();
     
     remoteStreams.forEach((stream, socketId) => {
+      // Проверяем, что поток все еще активен
+      const tracks = stream.getTracks();
+      if (tracks.length === 0) {
+        console.warn('⚠️ Поток для', socketId, 'не имеет треков!');
+        return;
+      }
+      
+      const activeTracks = tracks.filter(t => t.readyState === 'live');
+      if (activeTracks.length === 0) {
+        console.warn('⚠️ Нет активных треков для', socketId);
+      }
+      
       let audioElement = remoteVideoRefs.current.get(socketId);
       
-      console.log('🔍 Обрабатываю поток для:', socketId, 'audio элемент:', audioElement ? 'есть' : 'нет');
+      console.log('🔍 Обрабатываю поток для:', socketId, {
+        audioElement: audioElement ? 'есть' : 'нет',
+        tracksCount: tracks.length,
+        activeTracks: activeTracks.length
+      });
       
       // Создаем audio элемент если его нет (fallback, обычно создается в JSX)
       if (!audioElement) {
@@ -866,40 +917,18 @@ function VoiceChat({ channelId, channelName, socket, user }) {
             console.log('  ⚠️ Включаю отключенный трек');
             track.enabled = true;
           }
-          if (track.muted) {
-            console.log('  ⚠️ Трек заглушен, пытаюсь разглушить');
-            // track.muted - read-only, но можем проверить enabled
-          }
         });
         
         // Принудительное воспроизведение
         const playAudio = async () => {
           try {
             console.log('▶️ Пытаюсь воспроизвести для:', socketId);
-            console.log('  Состояние элемента:', {
-              volume: audioElement.volume,
-              muted: audioElement.muted,
-              paused: audioElement.paused,
-              readyState: audioElement.readyState,
-              srcObject: audioElement.srcObject ? 'есть' : 'нет'
-            });
-            
             await audioElement.play();
             console.log('✅ Аудио воспроизводится для:', socketId);
-            console.log('  volume:', audioElement.volume, 'muted:', audioElement.muted, 'paused:', audioElement.paused);
-            console.log('  Треки в потоке:', stream.getTracks().length, 'все включены:', stream.getTracks().every(t => t.enabled));
           } catch (err) {
             console.error('❌ Ошибка воспроизведения аудио для:', socketId, err);
-            console.error('  volume:', audioElement.volume, 'muted:', audioElement.muted, 'paused:', audioElement.paused);
-            console.error('  srcObject:', audioElement.srcObject ? 'есть' : 'нет');
-            console.error('  readyState:', audioElement.readyState);
-            
-            // Пробуем еще раз через небольшую задержку
             setTimeout(() => {
-              console.log('🔄 Повторная попытка воспроизведения для:', socketId);
-              audioElement.play().then(() => {
-                console.log('✅ Повторная попытка успешна для:', socketId);
-              }).catch(e => {
+              audioElement.play().catch(e => {
                 console.error('❌ Повторная ошибка воспроизведения:', e);
               });
             }, 500);
@@ -908,17 +937,23 @@ function VoiceChat({ channelId, channelName, socket, user }) {
         
         playAudio();
       } else if (audioElement.paused && audioElement.srcObject) {
-        // Если элемент уже настроен, но приостановлен, возобновляем
         console.log('▶️ Возобновляю воспроизведение для:', socketId);
         audioElement.play().catch(err => {
           console.error('Ошибка возобновления воспроизведения:', err);
         });
       }
       
-      // Периодически проверяем, что аудио воспроизводится
+      // Периодически проверяем, что аудио воспроизводится и поток активен
       if (!intervals.has(socketId)) {
         const checkInterval = setInterval(() => {
           const el = remoteVideoRefs.current.get(socketId);
+          const currentStream = remoteStreams.get(socketId);
+          
+          if (!currentStream) {
+            console.warn('⚠️ Поток исчез для:', socketId);
+            return;
+          }
+          
           if (el) {
             if (el.paused && el.srcObject) {
               console.warn('⚠️ Аудио приостановлено для:', socketId, 'пробую возобновить');
@@ -926,15 +961,12 @@ function VoiceChat({ channelId, channelName, socket, user }) {
                 console.error('Ошибка при попытке возобновить:', err);
               });
             }
-            // Логируем состояние каждые 10 секунд для отладки
-            if (Math.random() < 0.1) { // ~10% вероятность
-              console.log('📊 Состояние audio для', socketId, ':', {
-                paused: el.paused,
-                muted: el.muted,
-                volume: el.volume,
-                readyState: el.readyState,
-                hasSrcObject: !!el.srcObject
-              });
+            
+            // Проверяем треки
+            const tracks = currentStream.getTracks();
+            const activeTracks = tracks.filter(t => t.readyState === 'live' && t.enabled);
+            if (activeTracks.length === 0 && tracks.length > 0) {
+              console.warn('⚠️ Нет активных треков для:', socketId);
             }
           }
         }, 2000);
@@ -1002,58 +1034,68 @@ function VoiceChat({ channelId, channelName, socket, user }) {
             </div>
           )}
 
-          {participants.map(participant => (
-            <div key={participant.socketId} className="participant-card">
-              <div className="participant-avatar-wrapper">
-                <div className="participant-avatar">
-                  {participant.username?.charAt(0).toUpperCase() || 'U'}
+          {participants.map(participant => {
+            const hasStream = remoteStreams.has(participant.socketId);
+            const stream = hasStream ? remoteStreams.get(participant.socketId) : null;
+            const isRemoteSpeaking = stream && stream.getTracks().some(track => 
+              track.enabled && track.readyState === 'live' && !track.muted
+            );
+            
+            return (
+              <div key={participant.socketId} className={`participant-card ${isRemoteSpeaking ? 'speaking' : ''}`}>
+                <div className={`participant-avatar-wrapper ${isRemoteSpeaking ? 'speaking' : ''}`}>
+                  <div className="participant-avatar">
+                    {participant.username?.charAt(0).toUpperCase() || 'U'}
+                  </div>
                 </div>
-              </div>
-              <div className="participant-info">
-                <div className="participant-name">{participant.username || 'Участник'}</div>
-                <div className="participant-status">В сети</div>
-              </div>
-              <audio
-                ref={el => {
-                  if (el) {
-                    console.log('🎧 Audio элемент создан/обновлен в JSX для:', participant.socketId);
-                    remoteVideoRefs.current.set(participant.socketId, el);
-                    
-                    // Настраиваем элемент
-                    el.volume = 1.0;
-                    el.muted = false;
-                    el.autoplay = true;
-                    el.playsInline = true;
-                    
-                    // Устанавливаем поток если он уже есть
-                    if (remoteStreams.has(participant.socketId)) {
-                      const stream = remoteStreams.get(participant.socketId);
-                      console.log('🎵 Устанавливаю поток в JSX audio элемент для:', participant.socketId);
-                      el.srcObject = stream;
+                <div className="participant-info">
+                  <div className="participant-name">{participant.username || 'Участник'}</div>
+                  <div className="participant-status">
+                    {hasStream ? (isRemoteSpeaking ? '🎤 Говорит' : '🔊 В сети') : '⏳ Подключение...'}
+                  </div>
+                </div>
+                <audio
+                  ref={el => {
+                    if (el) {
+                      console.log('🎧 Audio элемент создан/обновлен в JSX для:', participant.socketId);
+                      remoteVideoRefs.current.set(participant.socketId, el);
                       
-                      // Включаем все треки
-                      stream.getTracks().forEach(track => {
-                        if (!track.enabled) {
-                          console.log('  Включаю трек в JSX:', track.id);
-                          track.enabled = true;
-                        }
-                      });
+                      // Настраиваем элемент
+                      el.volume = 1.0;
+                      el.muted = false;
+                      el.autoplay = true;
+                      el.playsInline = true;
                       
-                      // Принудительное воспроизведение
-                      el.play().then(() => {
-                        console.log('✅ Аудио воспроизводится в JSX для:', participant.socketId);
-                      }).catch(err => {
-                        console.error('❌ Ошибка воспроизведения в JSX:', err);
-                      });
+                      // Устанавливаем поток если он уже есть
+                      if (remoteStreams.has(participant.socketId)) {
+                        const stream = remoteStreams.get(participant.socketId);
+                        console.log('🎵 Устанавливаю поток в JSX audio элемент для:', participant.socketId);
+                        el.srcObject = stream;
+                        
+                        // Включаем все треки
+                        stream.getTracks().forEach(track => {
+                          if (!track.enabled) {
+                            console.log('  Включаю трек в JSX:', track.id);
+                            track.enabled = true;
+                          }
+                        });
+                        
+                        // Принудительное воспроизведение
+                        el.play().then(() => {
+                          console.log('✅ Аудио воспроизводится в JSX для:', participant.socketId);
+                        }).catch(err => {
+                          console.error('❌ Ошибка воспроизведения в JSX:', err);
+                        });
+                      }
                     }
-                  }
-                }}
-                autoPlay
-                playsInline
-                style={{ display: 'none' }}
-              />
-            </div>
-          ))}
+                  }}
+                  autoPlay
+                  playsInline
+                  style={{ display: 'none' }}
+                />
+              </div>
+            );
+          })}
 
           {!isConnected && participants.length === 0 && (
             <div className="empty-participants">
