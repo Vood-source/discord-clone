@@ -36,8 +36,18 @@ function VoiceChat({ channelId, channelName, socket, user }) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [micPermissionError, setMicPermissionError] = useState(null);
   const [connectionError, setConnectionError] = useState(null);
+  const [connectionErrors, setConnectionErrors] = useState(new Map()); // Ошибки по участникам
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [isReconnecting, setIsReconnecting] = useState(false);
+
+  // Показ уведомления пользователю
+  const showUserNotification = (message, isError = true) => {
+    console.log(isError ? '❌ Ошибка:' : 'ℹ️ Уведомление:', message);
+    // В реальном приложении можно использовать библиотеку уведомлений
+    // или показать сообщение в интерфейсе
+    alert(message);
+  };
+
   const peerConnections = useRef(new Map());
   const localVideoRef = useRef(null);
   const remoteVideoRefs = useRef(new Map());
@@ -49,8 +59,10 @@ function VoiceChat({ channelId, channelName, socket, user }) {
   const reconnectTimeoutRef = useRef(null);
   const heartbeatIntervalRef = useRef(null);
   const connectionStatsRef = useRef(new Map()); // Статистика соединений
+  const checkIntervals = useRef(new Map()); // Интервалы проверки состояния потоков
+  const pendingIceCandidates = useRef(new Map()); // Накопленные ICE candidates
+  const cleanupPeerConnectionRef = useRef();
 
-  // Функция для логирования статистики соединений
   const logConnectionStats = useCallback((socketId, message, isError = false) => {
     if (!isMountedRef.current) return;
 
@@ -77,10 +89,88 @@ function VoiceChat({ channelId, channelName, socket, user }) {
 
     connectionStatsRef.current.set(socketId, stats);
     console[isError ? 'error' : 'log'](`[${socketId}] ${message}`);
-  }, []);
+  }, [connectionStatsRef, isMountedRef]);
 
-  // Единая функция создания RTCPeerConnection (убрано дублирование)
-  const createRTCPeerConnection = useCallback((socketId, isInitiator = false) => {
+  // Предварительные объявления функций
+  const cleanupPeerConnection = useCallback((socketId) => {
+    if (!isMountedRef.current) return;
+
+    logConnectionStats(socketId, 'Очистка peer connection');
+
+    // Очищаем таймеры переподключения
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    // Очищаем интервалы проверки состояния для этого соединения
+    if (checkIntervals.current && checkIntervals.current.has(socketId)) {
+      clearInterval(checkIntervals.current.get(socketId));
+      checkIntervals.current.delete(socketId);
+    }
+
+    // Закрываем соединение если оно существует
+    if (peerConnections.current.has(socketId)) {
+      const pc = peerConnections.current.get(socketId);
+      try {
+        // Удаляем все обработчики событий
+        pc.onicecandidate = null;
+        pc.onnegotiationneeded = null;
+        pc.onconnectionstatechange = null;
+        pc.oniceconnectionstatechange = null;
+        pc.onsignalingstatechange = null;
+        pc.ontrack = null;
+
+        pc.close();
+      } catch (e) {
+        logConnectionStats(socketId, `Ошибка при закрытии соединения: ${e.message}`, true);
+      }
+      peerConnections.current.delete(socketId);
+    }
+
+    // Удаляем поток из ref
+    if (remoteStreamsRef.current.has(socketId)) {
+      remoteStreamsRef.current.delete(socketId);
+    }
+
+    // Удаляем поток из state
+    setRemoteStreams(prevStreams => {
+      const newStreams = new Map(prevStreams);
+      if (newStreams.has(socketId)) {
+        newStreams.delete(socketId);
+        logConnectionStats(socketId, 'Удален поток из state');
+      }
+      return newStreams;
+    });
+
+    // Очищаем статистику
+    if (connectionStatsRef.current.has(socketId)) {
+      connectionStatsRef.current.delete(socketId);
+    }
+
+    // Очищаем audio элемент
+    const audioElement = remoteVideoRefs.current.get(socketId);
+    if (audioElement) {
+      audioElement.srcObject = null;
+      // Удаляем обработчики событий с audio элемента
+      audioElement.onplay = null;
+      audioElement.onpause = null;
+      audioElement.onended = null;
+      audioElement.onerror = null;
+      remoteVideoRefs.current.delete(socketId);
+    }
+
+    // Очищаем накопленные ICE candidates
+    if (pendingIceCandidates.current && pendingIceCandidates.current.has(socketId)) {
+      pendingIceCandidates.current.delete(socketId);
+    }
+  }, [logConnectionStats]);
+
+  // Инициализируем ref для функции очистки
+  cleanupPeerConnectionRef.current = cleanupPeerConnection;
+
+  // Единая функция создания RTCPeerConnection
+  const createRTCPeerConnection = useCallback((socketId, isInitiator = false, providedLocalStream = localStream, providedSocket = socket) => {
     // Проверяем, не создано ли уже соединение
     if (peerConnections.current.has(socketId)) {
       const existingPc = peerConnections.current.get(socketId);
@@ -101,8 +191,8 @@ function VoiceChat({ channelId, channelName, socket, user }) {
       iceCandidatePoolSize: 10
     });
 
-    // Храним накопленные ICE candidates до установки remote description
-    const pendingIceCandidates = [];
+    // Инициализируем массив для накопленных ICE candidates
+    pc._pendingIceCandidates = [];
 
     // Добавляем локальный поток, если он есть
     if (localStream) {
@@ -135,7 +225,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
           track.onended = () => {
             console.warn('⚠️ Трек завершен для:', socketId, 'попытка восстановить...');
             // Пытаемся получить трек из потока снова
-            const currentStream = remoteStreams.get(socketId);
+            const currentStream = remoteStreamsRef.current.get(socketId) || remoteStreams.get(socketId);
             if (currentStream && currentStream.getTracks().length > 0) {
               console.log('  Трек все еще в потоке, возможно это временная проблема');
             } else {
@@ -237,49 +327,182 @@ function VoiceChat({ channelId, channelName, socket, user }) {
     };
 
     // Функция для обработки накопленных ICE candidates
-    const processPendingIceCandidates = async () => {
-      while (pendingIceCandidates.length > 0 && pc.remoteDescription) {
-        const candidate = pendingIceCandidates.shift();
+    pc._processPendingIceCandidates = async () => {
+      while (pc._pendingIceCandidates.length > 0 && pc.remoteDescription) {
+        const candidate = pc._pendingIceCandidates.shift();
         try {
           await pc.addIceCandidate(candidate);
-          console.log('Добавлен накопленный ICE candidate для:', socketId);
+          logConnectionStats(socketId, 'Добавлен накопленный ICE candidate');
         } catch (error) {
-          console.error('Ошибка добавления накопленного ICE candidate:', error);
+          logConnectionStats(socketId, `Ошибка добавления накопленного ICE candidate: ${error.message}`, true);
         }
       }
     };
 
-    // Сохраняем функцию обработки в объекте соединения
-    pc._processPendingCandidates = processPendingIceCandidates;
-
     peerConnections.current.set(socketId, pc);
     return pc;
-  }, [channelId, localStream, socket]);
+  }, [channelId, logConnectionStats, localStream, remoteStreams, socket]);
 
-  // Обработка изменения состояния соединения
-  const handleConnectionStateChange = useCallback((socketId, state) => {
+ // Планирование переподключения
+const scheduleReconnect = useCallback((socketId) => {
+  if (!isMountedRef.current) return;
+
+  // Проверяем, что пользователь все еще в канале
+  if (!participants.some(p => p.socketId === socketId)) {
+    logConnectionStats(socketId, 'Участник покинул канал, отменяю переподключение', true);
+    cleanupPeerConnectionRef.current(socketId);
+    return;
+  }
+
+  // Проверяем, что локальный поток доступен
+  if (!localStream) {
+    logConnectionStats(socketId, 'Локальный поток недоступен, отменяю переподключение', true);
+    return;
+  }
+
+  // Проверяем, что соединение еще не установлено
+  const pc = peerConnections.current.get(socketId);
+  if (pc && (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected')) {
+    logConnectionStats(socketId, 'Соединение уже установлено, отменяю переподключение');
+    return;
+  }
+
+  logConnectionStats(socketId, 'Планирую переподключение...');
+
+  // Очищаем предыдущий таймаут если он есть
+  if (reconnectTimeoutRef.current) {
+    clearTimeout(reconnectTimeoutRef.current);
+  }
+
+  // Получаем текущую статистику
+  const stats = connectionStatsRef.current.get(socketId) || {
+    created: new Date(),
+    lastUpdate: new Date(),
+    messages: [],
+    reconnects: 0,
+    lastState: null
+  };
+
+  // Проверяем максимальное количество попыток
+  if (stats.reconnects >= MAX_RECONNECT_ATTEMPTS) {
+    logConnectionStats(socketId, `Достигнуто максимальное количество попыток переподключения (${MAX_RECONNECT_ATTEMPTS})`, true);
+    setConnectionError(`Не удалось восстановить соединение с участником ${socketId}`);
+    cleanupPeerConnectionRef.current(socketId);
+    return;
+  }
+
+  // Увеличиваем счетчик попыток
+  stats.reconnects = (stats.reconnects || 0) + 1;
+  stats.lastUpdate = new Date();
+  stats.lastState = 'reconnecting';
+  connectionStatsRef.current.set(socketId, stats);
+
+  // Выбираем задержку в зависимости от количества попыток
+  const attemptIndex = Math.min(stats.reconnects - 1, RECONNECT_DELAYS.length - 1);
+  const delay = RECONNECT_DELAYS[attemptIndex];
+
+  logConnectionStats(socketId, `Попытка переподключения #${stats.reconnects} через ${delay}мс`);
+
+  // Планируем переподключение
+  reconnectTimeoutRef.current = setTimeout(() => {
     if (!isMountedRef.current) return;
 
-    logConnectionStats(socketId, `Обработка изменения состояния: ${state}`, true);
+    logConnectionStats(socketId, 'Выполняю переподключение...');
 
-    // Если соединение уже закрыто, ничего не делаем
-    if (state === 'closed') {
-      cleanupPeerConnection(socketId);
-      return;
+    // Проверяем, что пользователь все еще в канале и локальный поток доступен
+    if (localStream && participants.some(p => p.socketId === socketId)) {
+      // Проверяем, что соединение еще не установлено
+      const existingPc = peerConnections.current.get(socketId);
+      if (existingPc && (existingPc.connectionState === 'connected' || existingPc.iceConnectionState === 'connected')) {
+        logConnectionStats(socketId, 'Соединение уже установлено, отменяю повторное переподключение');
+        return;
+      }
+
+      // Закрываем старое соединение перед созданием нового
+      if (existingPc) {
+        try {
+          existingPc.close();
+        } catch (e) {
+          logConnectionStats(socketId, `Ошибка при закрытии старого соединения: ${e.message}`, true);
+        }
+        peerConnections.current.delete(socketId);
+      }
+
+      createRTCPeerConnection(socketId);
+    } else {
+      logConnectionStats(socketId, 'Локальный поток или участник недоступны, отменяю переподключение', true);
+      cleanupPeerConnectionRef.current(socketId);
     }
+  }, delay);
 
-    // Проверяем, не превысили ли мы максимальное количество попыток переподключения
-    const stats = connectionStatsRef.current.get(socketId);
-    if (stats && stats.reconnects >= MAX_RECONNECT_ATTEMPTS) {
-      logConnectionStats(socketId, `Достигнуто максимальное количество попыток переподключения (${MAX_RECONNECT_ATTEMPTS})`, true);
-      setConnectionError(`Не удалось восстановить соединение с участником ${socketId}`);
-      cleanupPeerConnection(socketId);
-      return;
-    }
+  setReconnectAttempts(prev => prev + 1);
+  setIsReconnecting(true);
+}, [participants, localStream, logConnectionStats, createRTCPeerConnection]);
 
-    // Планируем переподключение
-    scheduleReconnect(socketId);
-  }, [logConnectionStats]);
+// Обработка изменения состояния соединения
+ const handleConnectionStateChange = useCallback((socketId, state) => {
+   if (!isMountedRef.current) return;
+
+   logConnectionStats(socketId, `Обработка изменения состояния: ${state}`, true);
+
+   // Проверяем, что пользователь все еще в канале
+   if (!participants.some(p => p.socketId === socketId)) {
+     logConnectionStats(socketId, 'Участник покинул канал, очищаю соединение', true);
+     cleanupPeerConnectionRef.current(socketId);
+     return;
+   }
+
+   // Если соединение уже закрыто, ничего не делаем
+   if (state === 'closed') {
+     cleanupPeerConnectionRef.current(socketId);
+     return;
+   }
+
+   // Проверяем текущее состояние соединения
+   const pc = peerConnections.current.get(socketId);
+   if (!pc) {
+     logConnectionStats(socketId, 'Peer connection не найден, создаю новое', true);
+     scheduleReconnect(socketId);
+     return;
+   }
+
+   // Проверяем, что соединение уже установлено
+   if (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected') {
+     logConnectionStats(socketId, 'Соединение уже установлено, отменяю переподключение');
+     // Убираем ошибку если соединение восстановилось
+     setConnectionErrors(prev => {
+       const newErrors = new Map(prev);
+       newErrors.delete(socketId);
+       return newErrors;
+     });
+     return;
+   }
+
+   // Проверяем, не превысили ли мы максимальное количество попыток переподключения
+   const stats = connectionStatsRef.current.get(socketId);
+   if (stats && stats.reconnects >= MAX_RECONNECT_ATTEMPTS) {
+     logConnectionStats(socketId, `Достигнуто максимальное количество попыток переподключения (${MAX_RECONNECT_ATTEMPTS})`, true);
+     const errorMessage = `Не удалось восстановить соединение с участником ${socketId}`;
+
+     // Сохраняем ошибку для конкретного участника
+     setConnectionErrors(prev => {
+       const newErrors = new Map(prev);
+       newErrors.set(socketId, errorMessage);
+       return newErrors;
+     });
+
+     // Показываем уведомление пользователю
+     showUserNotification(errorMessage);
+
+     cleanupPeerConnectionRef.current(socketId);
+     return;
+   }
+
+   // Планируем переподключение только для нестабильных состояний
+   if (state === 'failed' || state === 'disconnected' || state === 'new') {
+     scheduleReconnect(socketId);
+   }
+ }, [logConnectionStats, participants, scheduleReconnect]);
 
   // Обработка завершения трека
   const handleTrackEnded = useCallback((socketId, pc) => {
@@ -287,112 +510,69 @@ function VoiceChat({ channelId, channelName, socket, user }) {
 
     logConnectionStats(socketId, 'Обработка завершения трека', true);
 
+    // Проверяем, что пользователь все еще в канале
+    if (!participants.some(p => p.socketId === socketId)) {
+      logConnectionStats(socketId, 'Участник покинул канал, очищаю соединение', true);
+      cleanupPeerConnectionRef.current(socketId);
+      return;
+    }
+
     // Проверяем, есть ли еще активные треки
     const remoteStream = remoteStreamsRef.current.get(socketId);
     if (remoteStream) {
       const activeTracks = remoteStream.getTracks().filter(t => t.readyState === 'live');
       if (activeTracks.length > 0) {
         logConnectionStats(socketId, `Есть активные треки (${activeTracks.length}), не переподключаемся`);
+
+        // Пытаемся восстановить поток из peerConnection._remoteStream
+        if (pc && pc._remoteStream) {
+          logConnectionStats(socketId, 'Восстанавливаю поток из peerConnection._remoteStream');
+          remoteStreamsRef.current.set(socketId, pc._remoteStream);
+          setRemoteStreams(prev => {
+            const newMap = new Map(prev);
+            newMap.set(socketId, pc._remoteStream);
+            return newMap;
+          });
+        }
         return;
       }
     }
 
-    // Если нет активных треков, пытаемся переподключиться
-    logConnectionStats(socketId, 'Нет активных треков, пытаемся переподключиться');
-    scheduleReconnect(socketId);
-  }, [logConnectionStats]);
+    // Проверяем текущее состояние соединения
+    if (pc && (pc.connectionState === 'connected' || pc.iceConnectionState === 'connected')) {
+      logConnectionStats(socketId, 'Соединение все еще активно, возможно временная потеря трека');
 
-  // Планирование переподключения
-  const scheduleReconnect = useCallback((socketId) => {
-    if (!isMountedRef.current) return;
-
-    // Увеличиваем счетчик попыток переподключения
-    const stats = connectionStatsRef.current.get(socketId) || {
-      created: new Date(),
-      lastUpdate: new Date(),
-      messages: [],
-      reconnects: 0,
-      lastState: null
-    };
-    stats.reconnects = (stats.reconnects || 0) + 1;
-    stats.lastState = 'reconnecting';
-    connectionStatsRef.current.set(socketId, stats);
-
-    setReconnectAttempts(prev => prev + 1);
-    setIsReconnecting(true);
-
-    // Определяем задержку для экспоненциального backoff
-    const attempt = Math.min(stats.reconnects - 1, RECONNECT_DELAYS.length - 1);
-    const delay = RECONNECT_DELAYS[attempt];
-
-    logConnectionStats(socketId, `Планирую переподключение (попытка ${stats.reconnects}/${MAX_RECONNECT_ATTEMPTS}) через ${delay}мс`);
-
-    // Очищаем предыдущий таймаут
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
+      // Пытаемся восстановить поток из peerConnection._remoteStream
+      if (pc._remoteStream) {
+        logConnectionStats(socketId, 'Восстанавливаю поток из peerConnection._remoteStream');
+        remoteStreamsRef.current.set(socketId, pc._remoteStream);
+        setRemoteStreams(prev => {
+          const newMap = new Map(prev);
+          newMap.set(socketId, pc._remoteStream);
+          return newMap;
+        });
+      }
+      return;
     }
 
-    // Устанавливаем новый таймаут
-    reconnectTimeoutRef.current = setTimeout(() => {
-      if (!isMountedRef.current) return;
+    // Если нет активных треков, показываем уведомление и пытаемся переподключиться
+    const errorMessage = `Потеряно соединение с участником ${socketId}. Пытаюсь восстановить...`;
+    logConnectionStats(socketId, errorMessage, true);
 
-      logConnectionStats(socketId, `Выполняю переподключение (попытка ${stats.reconnects})`);
-
-      // Проверяем, есть ли еще участник в списке
-      if (participants.some(p => p.socketId === socketId)) {
-        // Закрываем старое соединение
-        cleanupPeerConnection(socketId);
-
-        // Создаем новое соединение
-        if (localStream) {
-          createPeerConnection(socketId);
-        }
-      } else {
-        logConnectionStats(socketId, 'Участник уже покинул канал, отменяю переподключение');
-        cleanupPeerConnection(socketId);
-      }
-    }, delay);
-  }, [participants, localStream, logConnectionStats, createRTCPeerConnection]);
-
-  // Очистка peer connection
-  const cleanupPeerConnection = useCallback((socketId) => {
-    if (!isMountedRef.current) return;
-
-    logConnectionStats(socketId, 'Очистка peer connection');
-
-    // Закрываем соединение если оно существует
-    if (peerConnections.current.has(socketId)) {
-      const pc = peerConnections.current.get(socketId);
-      try {
-        pc.close();
-      } catch (e) {
-        logConnectionStats(socketId, `Ошибка при закрытии соединения: ${e.message}`, true);
-      }
-      peerConnections.current.delete(socketId);
-    }
-
-    // Удаляем поток из ref
-    if (remoteStreamsRef.current.has(socketId)) {
-      remoteStreamsRef.current.delete(socketId);
-    }
-
-    // Удаляем поток из state
-    setRemoteStreams(prevStreams => {
-      const newStreams = new Map(prevStreams);
-      if (newStreams.has(socketId)) {
-        newStreams.delete(socketId);
-        logConnectionStats(socketId, 'Удален поток из state');
-      }
-      return newStreams;
+    // Сохраняем ошибку для конкретного участника
+    setConnectionErrors(prev => {
+      const newErrors = new Map(prev);
+      newErrors.set(socketId, errorMessage);
+      return newErrors;
     });
 
-    // Очищаем статистику
-    if (connectionStatsRef.current.has(socketId)) {
-      connectionStatsRef.current.delete(socketId);
-    }
-  }, [logConnectionStats]);
+    // Показываем уведомление пользователю
+    showUserNotification(errorMessage, false);
 
-  // Создание peer connection с инициацией offer
+    cleanupPeerConnectionRef.current(socketId);
+  }, [logConnectionStats, participants, setRemoteStreams]);
+
+ // Создание peer connection с инициацией offer
   const createPeerConnection = useCallback(async (socketId) => {
     if (!isMountedRef.current) return;
 
@@ -450,7 +630,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
             }
           } catch (error) {
             logConnectionStats(socketId, `Ошибка создания offer для существующего соединения: ${error.message}`, true);
-            cleanupPeerConnection(socketId);
+            cleanupPeerConnectionRef.current(socketId);
           }
         }
       }
@@ -498,7 +678,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
     } catch (error) {
       logConnectionStats(socketId, `Ошибка создания offer: ${error.message}`, true);
       // Очищаем соединение при ошибке
-      cleanupPeerConnection(socketId);
+      cleanupPeerConnectionRef.current(socketId);
       if (socket && socket.connected) {
         socket.emit('voice_error', {
           channelId,
@@ -508,7 +688,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
         });
       }
     }
-  }, [channelId, socket, createRTCPeerConnection, localStream, logConnectionStats, cleanupPeerConnection]);
+  }, [channelId, socket, createRTCPeerConnection, localStream, logConnectionStats]);
 
   // Обработка WebRTC сигналов
   useEffect(() => {
@@ -597,22 +777,77 @@ function VoiceChat({ channelId, channelName, socket, user }) {
       });
     };
 
+    const validateSignal = (signal) => {
+      if (!signal) return false;
+
+      const requiredFields = {
+        'offer': ['sdp'],
+        'answer': ['sdp'],
+        'ice-candidate': ['candidate', 'sdpMid', 'sdpMLineIndex']
+      };
+
+      if (!signal.type) {
+        console.error('❌ Сигнал без типа:', signal);
+        return false;
+      }
+
+      if (requiredFields[signal.type]) {
+        const missingFields = requiredFields[signal.type].filter(field => !signal[field]);
+        if (missingFields.length > 0) {
+          console.error(`❌ В сигнале типа ${signal.type} отсутствуют поля:`, missingFields);
+          return false;
+        }
+      }
+
+      return true;
+    };
+
     const handleVoiceSignal = async (data) => {
       if (!isMountedRef.current) return;
-      
+
+      // Валидация входных данных
+      if (!data) {
+        console.error('❌ Данные сигнала не предоставлены');
+        return;
+      }
+
+      const { from, signal } = data;
+
+      if (!from) {
+        console.error('❌ Отсутствует поле "from" в данных сигнала:', data);
+        return;
+      }
+
+      if (!signal) {
+        console.error('❌ Отсутствует поле "signal" в данных сигнала от:', from);
+        return;
+      }
+
+      // Проверяем, что пользователь все еще в канале
+      if (!participants.some(p => p.socketId === from)) {
+        console.warn('⚠️ Сигнал от пользователя не в канале:', from);
+        return;
+      }
+
+      // Валидируем сигнал перед обработкой
+      if (!validateSignal(signal)) {
+        console.error('❌ Некорректный сигнал от:', from, 'сигнал:', signal);
+        return;
+      }
+
       const currentSocketId = socket.id;
-      if (!currentSocketId || data.from === currentSocketId) {
+      if (!currentSocketId || from === currentSocketId) {
         return; // Игнорируем свои сигналы
       }
 
-      console.log('Получен сигнал от:', data.from, 'тип:', data.signal.type);
+      console.log('📡 Получен сигнал от:', from, 'тип:', signal.type);
 
-      let pc = peerConnections.current.get(data.from);
+      let pc = peerConnections.current.get(from);
 
       // Создаем новое соединение, если его еще нет (используем единую функцию)
       if (!pc) {
-        console.log('Создаю новое peer connection для сигнала от:', data.from);
-        pc = createRTCPeerConnection(data.from, false);
+        console.log('🔗 Создаю новое peer connection для сигнала от:', from);
+        pc = createRTCPeerConnection(from, false);
       }
 
       try {
@@ -641,17 +876,9 @@ function VoiceChat({ channelId, channelName, socket, user }) {
           console.log('Remote description (offer) установлен для:', data.from);
           
           // Обрабатываем накопленные ICE candidates если они есть
-          if (pc._pendingCandidates && pc._pendingCandidates.length > 0) {
-            console.log('Обрабатываю накопленные ICE candidates:', pc._pendingCandidates.length);
-            for (const candidate of pc._pendingCandidates) {
-              try {
-                await pc.addIceCandidate(candidate);
-                console.log('✅ Добавлен накопленный ICE candidate');
-              } catch (error) {
-                console.error('Ошибка добавления накопленного candidate:', error);
-              }
-            }
-            pc._pendingCandidates = [];
+          if (pc._pendingIceCandidates && pc._pendingIceCandidates.length > 0) {
+            logConnectionStats(data.from, `Обрабатываю накопленные ICE candidates: ${pc._pendingIceCandidates.length}`);
+            await pc._processPendingIceCandidates();
           }
           
           const answer = await pc.createAnswer({
@@ -679,16 +906,9 @@ function VoiceChat({ channelId, channelName, socket, user }) {
           console.log('Remote description (answer) установлен для:', data.from);
           
           // Обрабатываем накопленные ICE candidates если они есть
-          if (pc._pendingCandidates && pc._pendingCandidates.length > 0) {
-            console.log('Обрабатываю накопленные ICE candidates после answer:', pc._pendingCandidates.length);
-            for (const candidate of pc._pendingCandidates) {
-              try {
-                await pc.addIceCandidate(candidate);
-              } catch (error) {
-                console.error('Ошибка добавления накопленного candidate:', error);
-              }
-            }
-            pc._pendingCandidates = [];
+          if (pc._pendingIceCandidates && pc._pendingIceCandidates.length > 0) {
+            logConnectionStats(data.from, `Обрабатываю накопленные ICE candidates после answer: ${pc._pendingIceCandidates.length}`);
+            await pc._processPendingIceCandidates();
           }
         } else if (data.signal.type === 'ice-candidate') {
           if (data.signal.candidate) {
@@ -702,20 +922,14 @@ function VoiceChat({ channelId, channelName, socket, user }) {
                 console.log('✅ ICE candidate добавлен для:', data.from);
               } else {
                 // Сохраняем candidate для добавления позже
-                if (!pc._pendingCandidates) {
-                  pc._pendingCandidates = [];
-                }
-                pc._pendingCandidates.push(candidate);
-                console.log('⏳ Remote description еще не установлен, сохраняю candidate (всего:', pc._pendingCandidates.length, ')');
+                pc._pendingIceCandidates.push(candidate);
+                logConnectionStats(data.from, `⏳ Remote description еще не установлен, сохраняю candidate (всего: ${pc._pendingIceCandidates.length})`);
               }
             } catch (error) {
               // Игнорируем ошибки если description еще не установлен
               if (error.message && error.message.includes('remote description')) {
                 console.log('Remote description еще не установлен, сохраняю candidate');
-                if (!pc._pendingCandidates) {
-                  pc._pendingCandidates = [];
-                }
-                pc._pendingCandidates.push(new RTCIceCandidate(data.signal.candidate));
+                pc._pendingIceCandidates.push(new RTCIceCandidate(data.signal.candidate));
               } else {
                 console.error('Ошибка добавления ICE candidate:', error);
               }
@@ -724,9 +938,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
         }
       } catch (error) {
         console.error('❌ Ошибка обработки сигнала:', error, 'от:', data.from, 'тип:', data.signal.type);
-        console.error('Состояние соединения:', pc.signalingState);
-        console.error('Local description:', pc.localDescription ? 'есть' : 'нет');
-        console.error('Remote description:', pc.remoteDescription ? 'есть' : 'нет');
+        logConnectionStats(data.from, `Ошибка обработки сигнала: ${error.message}, состояние: ${pc.signalingState}, localDesc: ${pc.localDescription ? 'есть' : 'нет'}, remoteDesc: ${pc.remoteDescription ? 'есть' : 'нет'}`, true);
         
         // Очищаем соединение при критической ошибке
         if (error.name === 'InvalidStateError' || error.name === 'OperationError') {
@@ -759,7 +971,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
       socket.off('user_left_voice', handleUserLeftVoice);
       socket.off('voice_signal', handleVoiceSignal);
     };
-  }, [socket, channelId, createPeerConnection, createRTCPeerConnection]);
+  }, [socket, channelId, createPeerConnection, createRTCPeerConnection, localStream, logConnectionStats, participants, setRemoteStreams]);
 
   // Проверка разрешений при монтировании компонента
   useEffect(() => {
@@ -1037,6 +1249,8 @@ function VoiceChat({ channelId, channelName, socket, user }) {
 
   // Функция очистки всех ресурсов
   const cleanupResources = useCallback(() => {
+    console.log('🧹🧹 Полная очистка всех ресурсов');
+
     // Останавливаем heartbeat
     stopHeartbeat();
 
@@ -1052,6 +1266,10 @@ function VoiceChat({ channelId, channelName, socket, user }) {
       reconnectTimeoutRef.current = null;
     }
 
+    // Очищаем все интервалы проверки состояния
+    checkIntervals.current.forEach(interval => clearInterval(interval));
+    checkIntervals.current.clear();
+
     // Закрываем audio context
     if (audioContextRef.current) {
       try {
@@ -1065,14 +1283,31 @@ function VoiceChat({ channelId, channelName, socket, user }) {
     // Останавливаем локальный поток
     if (localStream) {
       localStream.getTracks().forEach(track => {
-        track.stop();
+        try {
+          // Удаляем обработчики событий с треков
+          track.onended = null;
+          track.onmute = null;
+          track.onunmute = null;
+          track.stop();
+        } catch (e) {
+          console.warn('Ошибка при остановке локального трека:', e);
+        }
       });
     }
 
     // Закрываем все peer connections
     peerConnections.current.forEach((pc, socketId) => {
       try {
-        logConnectionStats(socketId, 'Закрываю peer connection при cleanup');
+        logConnectionStats(socketId, 'Закрываю peer connection при полной очистке');
+
+        // Удаляем все обработчики событий
+        pc.onicecandidate = null;
+        pc.onnegotiationneeded = null;
+        pc.onconnectionstatechange = null;
+        pc.oniceconnectionstatechange = null;
+        pc.onsignalingstatechange = null;
+        pc.ontrack = null;
+
         pc.close();
       } catch (e) {
         console.warn('Ошибка при закрытии RTCPeerConnection:', e);
@@ -1080,13 +1315,46 @@ function VoiceChat({ channelId, channelName, socket, user }) {
     });
     peerConnections.current.clear();
 
+    // Очищаем все удаленные потоки
+    remoteStreams.forEach((stream, socketId) => {
+      if (stream) {
+        stream.getTracks().forEach(track => {
+          try {
+            // Удаляем обработчики событий с треков
+            track.onended = null;
+            track.onmute = null;
+            track.onunmute = null;
+            track.stop();
+          } catch (e) {
+            console.warn('Ошибка при остановке удаленного трека:', e);
+          }
+        });
+      }
+    });
+    setRemoteStreams(new Map());
+    remoteStreamsRef.current.clear();
+
+    // Очищаем все audio элементы
+    remoteVideoRefs.current.forEach((audioElement, socketId) => {
+      if (audioElement) {
+        audioElement.srcObject = null;
+        // Удаляем обработчики событий с audio элемента
+        audioElement.onplay = null;
+        audioElement.onpause = null;
+        audioElement.onended = null;
+        audioElement.onerror = null;
+      }
+    });
+    remoteVideoRefs.current.clear();
+
+    // Очищаем накопленные ICE candidates
+    pendingIceCandidates.current.clear();
+
     // Очищаем статистику соединений
     connectionStatsRef.current.clear();
 
-    // НЕ очищаем удаленные потоки при cleanup - они могут быть нужны
-    // setRemoteStreams(new Map());
-    console.log('🧹 Cleanup всех ресурсов завершен');
-  }, [localStream, logConnectionStats]);
+    console.log('🧹🧹 Полная очистка всех ресурсов завершена');
+  }, [localStream, logConnectionStats, stopHeartbeat, setRemoteStreams, remoteStreams]);
 
   const leaveVoice = () => {
     logConnectionStats('system', 'Покидаю голосовой канал');
@@ -1142,60 +1410,60 @@ function VoiceChat({ channelId, channelName, socket, user }) {
   // Обновляем audio элементы когда появляются удаленные потоки
   useEffect(() => {
     console.log('🔄 useEffect для remoteStreams вызван, потоков в state:', remoteStreams.size, 'в ref:', remoteStreamsRef.current.size);
-    
+
     // Если в state нет потоков, но в ref есть - восстанавливаем
     if (remoteStreams.size === 0 && remoteStreamsRef.current.size > 0) {
       console.warn('⚠️ Потоки потеряны в state, но есть в ref. Восстанавливаю...');
       setRemoteStreams(new Map(remoteStreamsRef.current));
       return;
     }
-    
+
     if (remoteStreams.size === 0) {
-      console.warn('⚠️ Нет удаленных потоков! Проверьте, что peer connections установлены.');
-      console.warn('  Peer connections:', Array.from(peerConnections.current.keys()));
-      console.warn('  Потоки в ref:', Array.from(remoteStreamsRef.current.keys()));
+      console.log('ℹ️ Нет удаленных потоков. Это нормально если в канале нет других участников.');
+      return;
     }
-    
+
     const intervals = new Map();
-    
-    // Используем потоки из ref если state пустой
-    const streamsToProcess = remoteStreams.size > 0 ? remoteStreams : remoteStreamsRef.current;
-    console.log('📋 Обрабатываю потоки из:', remoteStreams.size > 0 ? 'state' : 'ref', 'количество:', streamsToProcess.size);
-    
-    streamsToProcess.forEach((stream, socketId) => {
-      // Проверяем, что поток все еще активен
-      if (!stream || !stream.getTracks) {
-        console.warn('⚠️ Некорректный поток для', socketId);
+
+    // Используем потоки из state (они более актуальные)
+    remoteStreams.forEach((stream, socketId) => {
+      // Проверяем, что пользователь все еще в канале
+      if (!participants.some(p => p.socketId === socketId)) {
+        console.log('ℹ️ Участник покинул канал:', socketId, 'пропускаю обработку потока');
         return;
       }
-      
+
+      // Проверяем, что поток все еще активен
+      if (!stream || !stream.getTracks) {
+        console.warn('⚠️ Некорректный поток для', socketId, 'пропускаю');
+        return;
+      }
+
       const tracks = stream.getTracks();
       if (tracks.length === 0) {
         console.warn('⚠️ Поток для', socketId, 'не имеет треков!');
         return;
       }
-      
+
       const activeTracks = tracks.filter(t => t.readyState === 'live');
       if (activeTracks.length === 0) {
         console.warn('⚠️ Нет активных треков для', socketId);
       }
-      
-      // Обновляем ref если поток из state
-      if (remoteStreams.has(socketId)) {
-        remoteStreamsRef.current.set(socketId, stream);
-      }
-      
+
+      // Обновляем ref
+      remoteStreamsRef.current.set(socketId, stream);
+
       let audioElement = remoteVideoRefs.current.get(socketId);
-      
+
       console.log('🔍 Обрабатываю поток для:', socketId, {
         audioElement: audioElement ? 'есть' : 'нет',
         tracksCount: tracks.length,
         activeTracks: activeTracks.length
       });
-      
-      // Создаем audio элемент если его нет (fallback, обычно создается в JSX)
+
+      // Создаем audio элемент если его нет
       if (!audioElement) {
-        console.log('🔊 Создаю новый audio элемент программно для:', socketId);
+        console.log('🔊 Создаю новый audio элемент для:', socketId);
         audioElement = document.createElement('audio');
         audioElement.autoplay = true;
         audioElement.playsInline = true;
@@ -1203,55 +1471,82 @@ function VoiceChat({ channelId, channelName, socket, user }) {
         audioElement.muted = false;
         remoteVideoRefs.current.set(socketId, audioElement);
       }
-      
+
+      // Обновляем поток только если он изменился
       if (audioElement.srcObject !== stream) {
         console.log('🎵 Обновляю audio элемент для:', socketId);
         audioElement.srcObject = stream;
         audioElement.volume = 1.0;
         audioElement.muted = false;
-        
+
         // Убеждаемся, что треки включены
         stream.getTracks().forEach(track => {
-          console.log('  Трек в потоке:', track.kind, track.id, 'enabled:', track.enabled, 'muted:', track.muted, 'readyState:', track.readyState);
           if (!track.enabled) {
-            console.log('  ⚠️ Включаю отключенный трек');
+            console.log('  ⚠️ Включаю отключенный трек:', track.id);
             track.enabled = true;
           }
+
+          // Добавляем обработчики событий для треков
+          track.onended = () => {
+            console.warn('⚠️ Трек завершен для:', socketId, 'тип:', track.kind);
+            handleTrackEnded(socketId, peerConnections.current.get(socketId));
+          };
+
+          track.onmute = () => {
+            console.warn('⚠️ Трек заглушен для:', socketId, 'тип:', track.kind);
+          };
+
+          track.onunmute = () => {
+            console.log('✅ Трек разглушен для:', socketId, 'тип:', track.kind);
+          };
         });
-        
-        // Принудительное воспроизведение
+
+        // Принудительное воспроизведение с обработкой ошибок autoplay
         const playAudio = async () => {
           try {
-            console.log('▶️ Пытаюсь воспроизвести для:', socketId);
+            console.log('▶️ Пытаюсь воспроизвести аудио для:', socketId);
             await audioElement.play();
-            console.log('✅ Аудио воспроизводится для:', socketId);
+            console.log('✅ Аудио успешно воспроизводится для:', socketId);
           } catch (err) {
-            console.error('❌ Ошибка воспроизведения аудио для:', socketId, err);
-            setTimeout(() => {
-              audioElement.play().catch(e => {
-                console.error('❌ Повторная ошибка воспроизведения:', e);
-              });
-            }, 500);
+            console.warn('⚠️ Ошибка autoplay для:', socketId, err.name, err.message);
+
+            // Обработка ошибок autoplay - добавляем обработчик клика на документ
+            if (err.name === 'NotAllowedError' || err.name === 'AbortError') {
+              const handleUserInteraction = async () => {
+                try {
+                  console.log('👆 Пользователь взаимодействовал с страницей, пытаюсь воспроизвести снова');
+                  await audioElement.play();
+                  console.log('✅ Аудио воспроизводится после взаимодействия пользователя');
+                  document.removeEventListener('click', handleUserInteraction);
+                  document.removeEventListener('keydown', handleUserInteraction);
+                } catch (e) {
+                  console.error('❌ Ошибка воспроизведения после взаимодействия:', e);
+                }
+              };
+
+              document.addEventListener('click', handleUserInteraction, { once: true });
+              document.addEventListener('keydown', handleUserInteraction, { once: true });
+            }
           }
         };
-        
+
         playAudio();
       } else if (audioElement.paused && audioElement.srcObject) {
         console.log('▶️ Возобновляю воспроизведение для:', socketId);
         audioElement.play().catch(err => {
-          console.error('Ошибка возобновления воспроизведения:', err);
+          console.warn('⚠️ Ошибка возобновления воспроизведения:', err);
         });
       }
-      
-      // Периодически проверяем, что аудио воспроизводится и поток активен
+
+      // Периодическая проверка состояния потока (реже, чем раньше)
       if (!intervals.has(socketId)) {
         const checkInterval = setInterval(() => {
           const el = remoteVideoRefs.current.get(socketId);
-          // Проверяем сначала в ref, потом в state
-          const currentStream = remoteStreamsRef.current.get(socketId) || remoteStreams.get(socketId);
-          
+          const currentStream = remoteStreamsRef.current.get(socketId);
+
           if (!currentStream) {
-            console.warn('⚠️ Поток исчез для:', socketId, 'проверяю peer connection...');
+            console.warn('⚠️ Поток исчез для:', socketId);
+            // Пытаемся восстановить из peer connection
             const pc = peerConnections.current.get(socketId);
             if (pc && pc._remoteStream) {
               console.log('  Восстанавливаю поток из peer connection');
@@ -1261,39 +1556,51 @@ function VoiceChat({ channelId, channelName, socket, user }) {
                 newMap.set(socketId, pc._remoteStream);
                 return newMap;
               });
+            } else {
+              // Если поток потерян и не можем восстановить - очищаем
+              console.warn('  Не удалось восстановить поток, очищаю соединение');
+              cleanupPeerConnectionRef.current(socketId);
             }
             return;
           }
-          
+
           if (el) {
+            // Проверяем, что аудио воспроизводится
             if (el.paused && el.srcObject) {
-              console.warn('⚠️ Аудио приостановлено для:', socketId, 'пробую возобновить');
+              console.log('ℹ️ Аудио приостановлено для:', socketId, 'пробую возобновить');
               el.play().catch(err => {
-                console.error('Ошибка при попытке возобновить:', err);
+                console.warn('⚠️ Ошибка при попытке возобновить:', err);
               });
             }
-            
+
             // Проверяем треки
             const tracks = currentStream.getTracks();
-            const activeTracks = tracks.filter(t => t.readyState === 'live' && t.enabled);
-            if (activeTracks.length === 0 && tracks.length > 0) {
-              console.warn('⚠️ Нет активных треков для:', socketId);
+            const activeAudioTracks = tracks.filter(t => t.kind === 'audio' && t.readyState === 'live' && t.enabled);
+
+            if (activeAudioTracks.length === 0 && tracks.length > 0) {
+              console.warn('⚠️ Нет активных аудио-треков для:', socketId);
+              // Если нет активных треков, но есть соединение - пытаемся переподключиться
+              const pc = peerConnections.current.get(socketId);
+              if (pc && pc.connectionState !== 'connected' && pc.iceConnectionState !== 'connected') {
+                handleTrackEnded(socketId, pc);
+              }
             }
           }
-        }, 2000);
+        }, 5000); // Увеличили интервал до 5 секунд для снижения нагрузки
         intervals.set(socketId, checkInterval);
       }
     });
-    
+
     // Очищаем все интервалы при размонтировании
     return () => {
       intervals.forEach(interval => clearInterval(interval));
     };
-  }, [remoteStreams]);
+  }, [remoteStreams, participants, handleTrackEnded, cleanupPeerConnection, peerConnections]);
 
   // Heartbeat для проверки состояния соединений (уже объявлены выше)
 
-  // Функция для получения статистики соединений (для отладки)
+  // Функция для получения статистики соединений (используется для отладки через window._getVoiceChatStats)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars, no-unused-vars
   const getConnectionStats = useCallback(() => {
     const stats = {
       isConnected,
@@ -1343,7 +1650,7 @@ function VoiceChat({ channelId, channelName, socket, user }) {
         socket.emit('leave_voice', channelId);
       }
     };
-  }, [channelId, isConnected, socket, cleanupResources]);
+  }, [channelId, isConnected, socket, cleanupResources, stopHeartbeat]);
 
   return (
     <div className="voice-chat">
@@ -1387,12 +1694,13 @@ function VoiceChat({ channelId, channelName, socket, user }) {
           {participants.map(participant => {
             const hasStream = remoteStreams.has(participant.socketId);
             const stream = hasStream ? remoteStreams.get(participant.socketId) : null;
-            const isRemoteSpeaking = stream && stream.getTracks().some(track => 
+            const isRemoteSpeaking = stream && stream.getTracks().some(track =>
               track.enabled && track.readyState === 'live' && !track.muted
             );
-            
+            const hasConnectionError = connectionErrors.has(participant.socketId);
+
             return (
-              <div key={participant.socketId} className={`participant-card ${isRemoteSpeaking ? 'speaking' : ''}`}>
+              <div key={participant.socketId} className={`participant-card ${isRemoteSpeaking ? 'speaking' : ''} ${hasConnectionError ? 'connection-error' : ''}`}>
                 <div className={`participant-avatar-wrapper ${isRemoteSpeaking ? 'speaking' : ''}`}>
                   <div className="participant-avatar">
                     {participant.username?.charAt(0).toUpperCase() || 'U'}
@@ -1401,7 +1709,11 @@ function VoiceChat({ channelId, channelName, socket, user }) {
                 <div className="participant-info">
                   <div className="participant-name">{participant.username || 'Участник'}</div>
                   <div className="participant-status">
-                    {hasStream ? (isRemoteSpeaking ? '🎤 Говорит' : '🔊 В сети') : '⏳ Подключение...'}
+                    {hasConnectionError ? (
+                      <span className="connection-error-indicator" title={connectionErrors.get(participant.socketId)}>⚠️ Проблема с соединением</span>
+                    ) : hasStream ? (
+                      isRemoteSpeaking ? '🎤 Говорит' : '🔊 В сети'
+                    ) : '⏳ Подключение...'}
                   </div>
                 </div>
                 <audio
@@ -1447,6 +1759,13 @@ function VoiceChat({ channelId, channelName, socket, user }) {
             );
           })}
 
+          {/* Отображение ошибок соединения */}
+          {Array.from(connectionErrors.values()).map((error, index) => (
+            <div key={`error-${index}`} className="connection-error-message">
+              ❌ {error}
+            </div>
+          ))}
+    
           {!isConnected && participants.length === 0 && (
             <div className="empty-participants">
               <p>В канале пока никого нет</p>

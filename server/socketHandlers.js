@@ -415,23 +415,132 @@ function setupSocketHandlers(io) {
 
     // Голосовой чат - WebRTC сигналы
     socket.on('voice_error', (data) => {
-      console.error(`🚨 Ошибка голосового чата в канале ${data.channelId}:`, data.error);
-      // Можно добавить логирование в базу данных здесь
-    });
+      const user = users.get(socket.id);
+      const username = user?.username || socket.id;
+      console.error(`🚨 Ошибка голосового чата от ${username} в канале ${data.channelId}:`, data.error, 'тип:', data.type);
 
-    socket.on('voice_signal', (data) => {
-      if (data.to) {
-        // Отправляем конкретному пользователю
-        socket.to(data.to).emit('voice_signal', {
-          signal: data.signal,
-          from: socket.id,
-          channelId: data.channelId
+      // Логируем ошибку в консоль и пересылаем участникам канала
+      if (data.target) {
+        // Если ошибка связана с конкретным участником, отправляем только ему
+        socket.to(data.target).emit('voice_error', {
+          error: data.error,
+          type: data.type,
+          channelId: data.channelId,
+          target: data.target,
+          from: socket.id
         });
       } else {
-        // Broadcast всем в комнате (для обратной совместимости)
-        socket.to(`voice_${data.channelId}`).emit('voice_signal', {
-          signal: data.signal,
-          from: socket.id,
+        // Отправляем всем в голосовом канале
+        socket.to(`voice_${data.channelId}`).emit('voice_error', {
+          error: data.error,
+          type: data.type,
+          channelId: data.channelId,
+          from: socket.id
+        });
+      }
+
+      // Дополнительно отправляем информацию об ошибке отправителю
+      socket.emit('voice_error_ack', {
+        error: data.error,
+        type: data.type,
+        channelId: data.channelId,
+        timestamp: Date.now()
+      });
+    });
+    
+    // Обработка heartbeat для голосового чата
+    socket.on('voice_heartbeat', (data) => {
+      const user = users.get(socket.id);
+      const username = user?.username || socket.id;
+
+      if (!data.channelId) {
+        console.warn(`⚠️ Heartbeat без channelId от ${username}`);
+        return;
+      }
+
+      // Проверяем, что пользователь действительно находится в этом голосовом канале
+      if (voiceRooms.has(data.channelId) && voiceRooms.get(data.channelId).has(socket.id)) {
+        const timestamp = data.timestamp || Date.now();
+        const serverTime = Date.now();
+
+        // Логируем heartbeat для отладки
+        console.log(`💓 Heartbeat от ${username} в канале ${data.channelId}, задержка: ${serverTime - timestamp}мс`);
+
+        // Отправляем heartbeat обратно клиенту
+        socket.emit('voice_heartbeat', {
+          channelId: data.channelId,
+          socketId: socket.id,
+          username: username,
+          timestamp: timestamp,
+          serverTime: serverTime,
+          latency: serverTime - timestamp
+        });
+
+        // Также отправляем heartbeat другим участникам канала
+        socket.to(`voice_${data.channelId}`).emit('voice_heartbeat', {
+          channelId: data.channelId,
+          socketId: socket.id,
+          username: username,
+          timestamp: timestamp,
+          isActive: true
+        });
+      } else {
+        console.warn(`⚠️ Пользователь ${username} пытается отправить heartbeat в канал ${data.channelId}, в котором он не находится`);
+        // Отправляем уведомление клиенту о том, что он не в канале
+        socket.emit('voice_heartbeat_error', {
+          error: 'NOT_IN_VOICE_CHANNEL',
+          message: 'Вы не находитесь в этом голосовом канале',
+          channelId: data.channelId
+        });
+      }
+    });
+    
+    socket.on('voice_signal', (data) => {
+      const user = users.get(socket.id);
+      const username = user?.username || socket.id;
+
+      if (!data.channelId) {
+        console.warn(`⚠️ Получен voice_signal без channelId от: ${username}`);
+        return;
+      }
+
+      // Валидация сигнала
+      if (!data.signal || !data.signal.type) {
+        console.warn(`⚠️ Получен невалидный voice_signal от: ${username}`, 'данные:', data);
+        return;
+      }
+
+      // Проверяем, что пользователь находится в этом голосовом канале
+      if (voiceRooms.has(data.channelId) && voiceRooms.get(data.channelId).has(socket.id)) {
+        if (data.to) {
+          // Отправляем конкретному пользователю
+          const targetUser = users.get(data.to);
+          const targetUsername = targetUser?.username || data.to;
+          console.log(`📤 Пересылаю сигнал ${data.signal.type} от ${username} к ${targetUsername} в канале ${data.channelId}`);
+
+          socket.to(data.to).emit('voice_signal', {
+            signal: data.signal,
+            from: socket.id,
+            username: username,
+            channelId: data.channelId
+          });
+        } else {
+          // Broadcast всем в комнате (для обратной совместимости)
+          console.log(`📤 Broadcast сигнала ${data.signal.type} от ${username} в канале ${data.channelId}`);
+          socket.to(`voice_${data.channelId}`).emit('voice_signal', {
+            signal: data.signal,
+            from: socket.id,
+            username: username,
+            channelId: data.channelId
+          });
+        }
+      } else {
+        console.warn(`⚠️ Пользователь ${username} пытается отправить сигнал в канал ${data.channelId}, в котором он не находится`);
+        // Отправляем уведомление об ошибке клиенту
+        socket.emit('voice_error', {
+          error: 'NOT_IN_VOICE_CHANNEL',
+          message: 'Вы не находитесь в этом голосовом канале',
+          type: 'signal_validation',
           channelId: data.channelId
         });
       }
